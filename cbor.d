@@ -695,7 +695,7 @@ private size_t encodeLongType(R)(auto ref R sink, ubyte majorType, ulong length)
 	}
 }
 
-// Encodes integer.
+/// Encodes integer.
 size_t encodeCborInt(R, E)(auto ref R sink, E value)
 	if(isOutputRange!(R, ubyte) && isIntegral!E)
 {
@@ -713,7 +713,7 @@ size_t encodeCborInt(R, E)(auto ref R sink, E value)
 	return encodeLongType(sink, majorType, val);
 }
 
-// Encodes floating.
+/// Encodes floating.
 size_t encodeCborFloat(R, E)(auto ref R sink, E value)
 	if(isOutputRange!(R, ubyte) && isFloatingPoint!E)
 {
@@ -741,7 +741,7 @@ size_t encodeCborFloat(R, E)(auto ref R sink, E value)
 	}
 }
 
-// Encodes boolean.
+/// Encodes boolean.
 size_t encodeCborBool(R, E)(auto ref R sink, E value)
 	if(isOutputRange!(R, ubyte) && isBoolean!E)
 {
@@ -752,7 +752,7 @@ size_t encodeCborBool(R, E)(auto ref R sink, E value)
 	return 1;
 }
 
-// Encodes null.
+/// Encodes null.
 size_t encodeCborNull(R, E)(auto ref R sink, E value)
 	if(isOutputRange!(R, ubyte) && is(E == typeof(null)))
 {
@@ -760,7 +760,7 @@ size_t encodeCborNull(R, E)(auto ref R sink, E value)
 	return 1;
 }
 
-// Encodes range of ubytes.
+/// Encodes range of ubytes.
 size_t encodeCborRaw(R, E)(auto ref R sink, E value)
 	if(isOutputRange!(R, ubyte) && is(ElementType!E == ubyte))
 {
@@ -770,7 +770,7 @@ size_t encodeCborRaw(R, E)(auto ref R sink, E value)
 	return size;
 }
 
-// Encodes string.
+/// Encodes string.
 size_t encodeCborString(R, E)(auto ref R sink, E value)
 	if(isOutputRange!(R, ubyte) && is(E == string))
 {
@@ -781,7 +781,7 @@ size_t encodeCborString(R, E)(auto ref R sink, E value)
 }
 
 private import std.typecons : isTuple;
-// Encodes array of any items or a tuple as cbor array.
+/// Encodes array of any items or a tuple as cbor array.
 size_t encodeCborArray(R, E)(auto ref R sink, E value)
 	if(isOutputRange!(R, ubyte) &&
 	(isInputRange!E || isArray!E || isTuple!E))
@@ -799,7 +799,7 @@ size_t encodeCborArray(R, E)(auto ref R sink, E value)
 	}
 }
 
-// Encodes structs and classes as cbor array.
+/// Encodes structs and classes as cbor array.
 size_t encodeCborArray(R, A)(auto ref R sink, A aggregate)
 	if(isOutputRange!(R, ubyte) &&
 		(is(A == struct) || is(A == class)) &&
@@ -808,7 +808,7 @@ size_t encodeCborArray(R, A)(auto ref R sink, A aggregate)
 	return encodeCborAggregate!(Flag!"WithFieldName".no)(sink, aggregate);
 }
 
-// Encodes asociative array as cbor map.
+/// Encodes asociative array as cbor map.
 size_t encodeCborMap(R, E)(auto ref R sink, E value)
 	if(isOutputRange!(R, ubyte) && isAssociativeArray!E)
 {
@@ -821,8 +821,8 @@ size_t encodeCborMap(R, E)(auto ref R sink, E value)
 	return size;
 }
 
-// Encodes structs and classes as cbor map.
-// Note, that decoding of structs and classes from maps is not supported (yet).
+/// Encodes structs and classes as cbor map.
+/// Note, that decoding of structs and classes from maps is not supported (yet).
 size_t encodeCborMap(R, A)(auto ref R sink, A aggregate)
 	if(isOutputRange!(R, ubyte) &&
 		(is(A == struct) || is(A == class)) &&
@@ -831,24 +831,24 @@ size_t encodeCborMap(R, A)(auto ref R sink, A aggregate)
 	return encodeCborAggregate!(Flag!"WithFieldName".yes)(sink, aggregate);
 }
 
-// Encode array head with arrayLength elements.
-// arrayLength items must follow.
+/// Encode array head with arrayLength elements.
+/// arrayLength items must follow.
 size_t encodeCborArrayHead(R)(auto ref R sink, ulong arrayLength)
 	if(isOutputRange!(R, ubyte))
 {
 	return encodeLongType(sink, 4, arrayLength);
 }
 
-// Encode map head with mapLength elements.
-// mapLength pairs of items must follow. Keys first, then values.
+/// Encode map head with mapLength elements.
+/// mapLength pairs of items must follow. Keys first, then values.
 size_t encodeCborMapHead(R)(auto ref R sink, ulong mapLength)
 	if(isOutputRange!(R, ubyte))
 {
 	return encodeLongType(sink, 5, mapLength);
 }
 
-// Encodes classes and structs. If withFieldName is yes, than value is encoded as map.
-// If withFieldName is no, then value is encoded as an array.
+/// Encodes classes and structs. If withFieldName is yes, than value is encoded as map.
+/// If withFieldName is no, then value is encoded as an array.
 size_t encodeCborAggregate(Flag!"WithFieldName" withFieldName, R, A)(auto ref R sink, auto ref A aggregate)
 	if (isOutputRange!(R, ubyte) && (is(A == struct) || is(A == class)))
 {
@@ -1298,8 +1298,6 @@ version(unittest)
 
 unittest // encoding
 {
-	
-
 	// Test vectors
 	cmpEncoded(0, "0x00");
 	cmpEncoded(1, "0x01");
@@ -1528,11 +1526,11 @@ unittest // decoding decodeCbor
 
 	// Single-Precision Float (four-byte IEEE 754)
 	assert(decodeCbor(cast(ubyte[])[0xfa] ~
-		nativeToBigEndian!uint((cast(__FloatRep)1.234f).u)[]) == CborValue(1.234f));
+		ntob!uint((cast(__FloatRep)1.234f).u)[]) == CborValue(1.234f));
 	
 	// Double-Precision Float (eight-byte IEEE 754)
 	assert(decodeCbor(cast(ubyte[])[0xfb] ~
-		nativeToBigEndian!ulong((cast(__DoubleRep)1.234).u)[]) == CborValue(1.234));
+		ntob!ulong((cast(__DoubleRep)1.234).u)[]) == CborValue(1.234));
 }
 
 ///
@@ -1560,13 +1558,12 @@ unittest // decoding exact
 		void* pointer; // not encoded
 	}
 
+	ubyte[1024] buf1;
+	size_t size;
 
 	Test1 test = Test1(42, -120, 111111, -123456789, 0.1234, -0.987654,
 		cast(ubyte[])[1,2,3,4,5,6,7,8], "It is a test string",
 		Inner([1,2,3,4,5], "Test of inner struct"));
-
-	ubyte[1024] buf1;
-	size_t size;
 
 	size = encodeCborArray(buf1[], test);
 	Test1 result = decodeCborSingle!Test1(buf1[0..size]);
