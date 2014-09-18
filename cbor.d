@@ -5,7 +5,15 @@ Authors: Andrey Penechko.
 
 Some code is based on msgpack-d by Masahiro Nakagawa.
 
-Concise Binary Object Representation (CBOR) for D lang
+Concise Binary Object Representation (CBOR) for D lang.
+
+The Concise Binary Object Representation (CBOR) is a data format
+whose design goals include the possibility of extremely small code
+size, fairly small message size, and extensibility without the need
+for version negotiation.  These design goals make it different from
+earlier binary serializations such as ASN.1 and MessagePack.
+
+Standards: Conforms to RFC 7049.
 */
 
 module cbor;
@@ -31,7 +39,7 @@ class CborException : Exception
 //		 SSSSS    TTT    OOOO0  RR   RR AA   AA  GGGGGG EEEEEEE 
 //------------------------------------------------------------------------------
 
-
+/// Tagged union for CBOR items.
 align(1) struct CborValue
 {
 	align(1):
@@ -304,56 +312,6 @@ align(1) struct CborValue
 	}
 
 
-	/**
-	 * Converts to $(D_PARAM T) type.
-	 *
-	 * Calling $(D fromMsgpack) if $(D_KEYWORD class) and $(D_KEYWORD struct) implement $(D fromMsgpack) method. $(D fromMsgpack) signature is:
-	 * -----
-	 * void fromMsgpack(Value value)
-	 * -----
-	 * This method assigns converted values to all members of T object if $(D_KEYWORD class) and $(D_KEYWORD struct) don't implement $(D fromMsgpack).
-	 *
-	 * Params:
-	 *  args = arguments to class constructor(class only).
-	 *
-	 * Returns:
-	 *  converted value.
-	 */
-	/*@property @trusted
-	T as(T, Args...)(Args args) if (is(Unqual!T == class))
-	{
-		if (type == Type.nil)
-			return null;
-
-		T object = new T(args);
-
-		static if (hasMember!(T, "fromMsgpack"))
-		{
-			static if (__traits(compiles, { T t; t.fromMsgpack(this); })) {
-				object.fromMsgpack(this);
-			} else {
-				static assert(0, "Failed to invoke 'fromMsgpack' on type '" ~ Unqual!T.stringof ~ "'");
-			}
-		} else {
-			alias Classes = SerializingClasses!(T);
-
-			if (via.array.length != SerializingMemberNumbers!(Classes))
-				throw new MessagePackException("The number of deserialized object member is mismatched");
-
-			size_t offset;
-			foreach (Class; Classes) {
-				Class obj = cast(Class)object;
-				foreach (i, member; obj.tupleof) {
-					static if (isPackedField!(Class.tupleof[i]))
-						obj.tupleof[i] = via.array[offset++].as!(typeof(member));
-				}
-			}
-		}
-
-		return object;
-	}
-
-	*/
 	/// ditto
 	@property @trusted
 	T as(T)()
@@ -574,6 +532,7 @@ align(1) struct CborValue
 		return via.text == other;
 	}
 
+	/// Hashing.
 	size_t toHash() const nothrow @trusted
 	{
 		final switch(type)
@@ -591,6 +550,7 @@ align(1) struct CborValue
 		}
 	}
 
+	/// String representation.
 	string toString()
 	{
 		import std.string : format;
@@ -620,6 +580,8 @@ align(1) struct CborValue
 
 
 private import std.range : isInputRange, isOutputRange, ElementType, put;
+private import std.typecons : isTuple;
+
 /// Encodes value E into output range sink.
 /// Returns number of bytes written to sink.
 size_t encodeCbor(R, E)(auto ref R sink, E value)
@@ -666,12 +628,13 @@ size_t encodeCbor(R, E)(auto ref R sink, E value)
 	}
 }
 
-
+// Encode integer types as separate type or as part of arrays or map.
 private size_t encodeLongType(R)(auto ref R sink, ubyte majorType, ulong length)
 	if(isOutputRange!(R, ubyte))
 {
 	import std.bitmanip : nativeToBigEndian;
 	import std.array;
+
 	majorType <<= 5;
 	if (length < 24) {
 		put(sink, cast(ubyte)(majorType | length));
@@ -780,7 +743,6 @@ size_t encodeCborString(R, E)(auto ref R sink, E value)
 	return size;
 }
 
-private import std.typecons : isTuple;
 /// Encodes array of any items or a tuple as cbor array.
 size_t encodeCborArray(R, E)(auto ref R sink, E value)
 	if(isOutputRange!(R, ubyte) &&
