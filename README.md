@@ -1,6 +1,6 @@
 Concise Binary Object Representation (CBOR) for D language
 
-`
+
 	import cbor;
 	
 	struct Inner
@@ -36,4 +36,3 @@ Concise Binary Object Representation (CBOR) for D language
 	encodedSize = encodeCborArray(buffer[], test);
 	Test result = decodeCborSingle!Test(buffer[0..encodedSize]);
 	assert(test == result);
-`
