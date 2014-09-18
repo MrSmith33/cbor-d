@@ -1,0 +1,13 @@
+{
+	"name": "cbor-d",
+	"description": "Concise Binary Object Representation (CBOR) for D lang",
+	"authors": ["Andrey Penechko"],
+	"homepage" : "http://github.com/MrSmith33/cbor-d",
+
+	"importPaths" : [ "./" ],
+	"sourceFiles": ["cbor.d"],
+
+	"license": "BSL-1.0",
+
+	"targetType" : "library"
+}
