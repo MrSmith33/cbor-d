@@ -2,19 +2,19 @@
 
 ### Supported features
 1. Encoding
-..+ integers - `ubyte ushort uint ulong byte short int long`D.
-..+ floating numbers - `float`D, `double`D.
-..+ boolean - `bool`D.
-..+ fixed length byte strings - `ubyte[]`D.
-..+ fixed length UTF-8 strings - `string`D
-..+ fixed length arrays aka tuples. Items can be of any type.
-..+ fixed length maps. Pairs of key/value of any type - `K[V]`D.
-..+ Aggregate encoding. Structs, tuples and classes - `class, Tuple, struct`D. Can be encoded as both arrays and maps.
-..+ null values - `null`D.
+  + integers - `ubyte ushort uint ulong byte short int long`.
+  + floating numbers - `float`, `double`.
+  + boolean - `bool`.
+  + fixed length byte strings - `ubyte[]`.
+  + fixed length UTF-8 strings - `string`
+  + fixed length arrays aka tuples. Items can be of any type.
+  + fixed length maps. Pairs of key/value of any type - `K[V]`.
+  + Aggregate encoding. Structs, tuples and classes - `class, Tuple, struct`. Can be encoded as both arrays and maps.
+  + null values - `null`.
 2. Decoding
-..+ Aggregates can only be decoded from arrays now.
-..+ Half floating point values are not supported yet.
-..+ null values can be decoded as classes, arrays, maps, string.
+  + Aggregates can only be decoded from arrays now.
+  + Half floating point values are not supported yet.
+  + null values can be decoded as classes, arrays, maps, string.
 
 ### Restrictions
 + No streaming support (i.e. Indefinite-Length Arrays, Maps, Byte Strings and Text Strings)
