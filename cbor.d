@@ -956,7 +956,8 @@ CborValue decodeCbor(R)(auto ref R input)
 		case 0xf8: // (simple value, one byte follows)
 			onUnsupportedTag(item); break;
 		case 0xf9: // Half-Precision Float (two-byte IEEE 754)
-			onUnsupportedTag(item); break;
+			__HalfRep hr = {u : readInteger!ushort(input)};
+			return CborValue(hr.h.get!real);
 		case 0xfa: // Single-Precision Float (four-byte IEEE 754)
 			__FloatRep fr = {u : readInteger!uint(input)};
 			return CborValue(fr.f);
@@ -1098,6 +1099,8 @@ private struct HalfFloat
 	}
 }
 
+private import std.numeric : CustomFloat;
+private union __HalfRep { CustomFloat!16 h; ushort u; string toString(){return format("__HalfRep(%s, %x)", h, u);};}
 private union __FloatRep { float f; uint u; string toString(){return format("__FloatRep(%s, %x)", f, u);};}
 private union __DoubleRep { double d; ulong u; string toString(){return format("__DoubleRep(%s, %x)", d, u);};}
 
@@ -1230,6 +1233,7 @@ unittest // string
 	assert(val.type == CborValue.Type.text);
 }
 
+// Testing helpers
 version(unittest)
 {
 	private ubyte[1024] buf;
@@ -1363,7 +1367,6 @@ unittest // encoding
 
 unittest // decoding decodeCbor
 {
-	//import std.stdio;
 	import std.range : only, chain, iota;
 	import std.exception;
 	import std.bitmanip;
@@ -1482,9 +1485,13 @@ unittest // decoding decodeCbor
 	assert(decodeCbor(cast(ubyte[])[0xf6]) == CborValue(null));
 	// Undefined
 	assert(decodeCbor(cast(ubyte[])[0xf7]) == CborValue(CborValue.Type.undefined));
-	// (simple value, one byte follows)
+	
+	// (simple value, one byte follows) 0xf8
 
 	// Half-Precision Float (two-byte IEEE 754)
+	__HalfRep hr = {h : CustomFloat!16(1.234f)};
+	assert(decodeCbor(cast(ubyte[])[0xf9] ~
+		ntob!ushort((hr.u))[]) == CborValue(CustomFloat!16(1.234f).get!float));
 
 	// Single-Precision Float (four-byte IEEE 754)
 	assert(decodeCbor(cast(ubyte[])[0xfa] ~
