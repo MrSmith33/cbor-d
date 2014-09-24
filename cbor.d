@@ -65,7 +65,7 @@ align(1) struct CborValue
 		bool boolean;
 		long integer;
 		ulong uinteger;
-		real floating;
+		double floating;
 		
 		CborValue[] array;
 		CborValue[CborValue] map;
@@ -850,7 +850,11 @@ CborValue decodeCbor(R)(auto ref R input)
 	import std.array;
 	import std.bitmanip;
 	
+	// tags will be ignored and decoding will restart from here
+	start_label:
+
 	assert(!input.empty);
+	if (input.empty) onInsufficientInput();
 
 	ubyte item = input.front;
 	input.popFront;
@@ -925,24 +929,20 @@ CborValue decodeCbor(R)(auto ref R input)
 			return CborValue(readMap(input, readInteger!ulong(input)));
 		case 0xbf: // map, pairs of data items follow, terminated by "break"
 			onUnsupportedTag(item); break;
-		case 0xc0: // Text-based date/time (data item follows; see Section 2.4.1)
-			onUnsupportedTag(item); break;
-		case 0xc1: // Epoch-based date/time (data item follows; see Section 2.4.1)
-			onUnsupportedTag(item); break;
-		case 0xc2: // Positive bignum (data item "byte string" follows)
-			onUnsupportedTag(item); break;
-		case 0xc3: // Negative bignum (data item "byte string" follows)
-			onUnsupportedTag(item); break;
-		case 0xc4: // Decimal Fraction (data item "array" follows; see Section 2.4.3)
-			onUnsupportedTag(item); break;
-		case 0xc5: // Bigfloat (data item "array" follows; see Section 2.4.3)
-			onUnsupportedTag(item); break;
-		case 0xc6: .. case 0xd4: // (tagged item)
-			onUnsupportedTag(item); break;
-		case 0xd5: .. case 0xd7: // Expected Conversion (data item follows; see Section 2.4.4.2)
-			onUnsupportedTag(item); break;
-		case 0xd8: .. case 0xdb: // (more tagged items, 1/2/4/8 bytes and then a data item follow)
-			onUnsupportedTag(item); break;
+		case 0xc0: .. case 0xd7: // (tagged item) ignore
+			goto start_label;
+		case 0xd8: // ignore 1-byte tag
+			dropBytes(input, 1);
+			goto start_label;
+		case 0xd9: // ignore 2-byte tag
+			dropBytes(input, 2);
+			goto start_label;
+		case 0xda: // ignore 4-byte tag
+			dropBytes(input, 4);
+			goto start_label;
+		case 0xdb: // ignore 8-byte tag
+			dropBytes(input, 8);
+			goto start_label;
 		case 0xe0: .. case 0xf3: // (simple value)
 			onUnsupportedTag(item); break;
 		case 0xf4: // False
@@ -957,7 +957,7 @@ CborValue decodeCbor(R)(auto ref R input)
 			onUnsupportedTag(item); break;
 		case 0xf9: // Half-Precision Float (two-byte IEEE 754)
 			__HalfRep hr = {u : readInteger!ushort(input)};
-			return CborValue(hr.h.get!real);
+			return CborValue(hr.h.get!double);
 		case 0xfa: // Single-Precision Float (four-byte IEEE 754)
 			__FloatRep fr = {u : readInteger!uint(input)};
 			return CborValue(fr.f);
@@ -967,10 +967,10 @@ CborValue decodeCbor(R)(auto ref R input)
 		case 0xff: // "break" stop code
 			onUnsupportedTag(item); break;
 		default:
-		{}
+			onUnsupportedTag(item);
 	}
 
-	return CborValue(CborValue.Type.undefined);
+	assert(false);
 }
 
 /// Decodes single cbor value and tries to convert it to requested type.
@@ -1014,6 +1014,16 @@ private T readN(ubyte size, T, R)(auto ref R input)
 	T result = bigEndianToNative!(T, size)(data);
 
 	return result;
+}
+
+// Drops exactly length bytes from input range.
+// If there is not sufficient bytes in input, CborException is thrown.
+private void dropBytes(R)(auto ref R input, ulong length)
+	if(isInputRange!R && is(ElementType!R == ubyte))
+{
+	import std.range : dropExactly;
+	if (input.length < length) onInsufficientInput();
+	input = input.dropExactly(cast(size_t)length);
 }
 
 // Reads byte array from input range. On 32-bit can read up to uint.max bytes.
@@ -1069,7 +1079,7 @@ private CborValue[CborValue] readMap(R)(auto ref R input, ulong length)
 {
 	static if (size_t.sizeof < ulong.sizeof)
 		if (length > size_t.max)
-			throw new CborException(format("Array size is too big %s", length));
+			throw new CborException(format("Map size is too big: %s", length));
 
 	size_t mapLength = cast(size_t)length;
 	CborValue[CborValue] result; // can use uninitializedArray
@@ -1081,22 +1091,6 @@ private CborValue[CborValue] readMap(R)(auto ref R input, ulong length)
 	}
 
 	return result;
-}
-
-private struct HalfFloat
-{
-	import std.bitmanip : bitfields;
-	union
-	{
-		ushort asUshort;
-		struct
-		{
-			mixin(bitfields!(
-		        uint, "fraction", 10,
-		        uint, "exponent", 5,
-		        bool, "sign",     1));
-		}
-	}
 }
 
 private import std.numeric : CustomFloat;
@@ -1499,7 +1493,17 @@ unittest // decoding decodeCbor
 	
 	// Double-Precision Float (eight-byte IEEE 754)
 	assert(decodeCbor(cast(ubyte[])[0xfb] ~
-		ntob!ulong((cast(__DoubleRep)1.234).u)[]) == CborValue(1.234));
+		ntob!ulong((cast(__DoubleRep)1.234).u)[]) == CborValue(1.234));	
+}
+
+unittest // test tag ignoring
+{
+	assert(decodeCbor(cast(ubyte[])[0xc0, 0x18, ubyte.max]) == ubyte.max);
+
+	assert(decodeCbor(cast(ubyte[])[0xd8, 0, 0x18, ubyte.max]) == ubyte.max);
+	assert(decodeCbor(cast(ubyte[])[0xd9, 0, 0, 0x18, ubyte.max]) == ubyte.max);
+	assert(decodeCbor(cast(ubyte[])[0xda, 0, 0, 0, 0, 0x18, ubyte.max]) == ubyte.max);
+	assert(decodeCbor(cast(ubyte[])[0xdb, 0, 0, 0, 0, 0, 0, 0, 0, 0x18, ubyte.max]) == ubyte.max);
 }
 
 ///
