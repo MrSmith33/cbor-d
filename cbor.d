@@ -280,10 +280,10 @@ align(1) struct CborValue
 			if (type != Type.array)
 				onCastErrorToFrom!T(type);
 
-			V[] array;
+			V[] array = new V[via.array.length];
 
-			foreach (elem; via.array)
-				array ~= elem.as!(V);
+			foreach (i, elem; via.array)
+				array[i] = elem.as!(V);
 
 			return array;
 		}
@@ -620,7 +620,7 @@ size_t encodeCbor(R, E)(auto ref R sink, E value)
 	}
 	else static if (isAssociativeArray!E)
 	{
-		return encodeCborMap(sink, value);		
+		return encodeCborMap(sink, value);
 	}
 	else
 	{
@@ -709,9 +709,9 @@ size_t encodeCborBool(R, E)(auto ref R sink, E value)
 	if(isOutputRange!(R, ubyte) && isBoolean!E)
 {
 	if (value)
-		sink.put(cast(ubyte)0xf5);
+		put(sink, cast(ubyte)0xf5);
 	else
-		sink.put(cast(ubyte)0xf4);
+		put(sink, cast(ubyte)0xf4);
 	return 1;
 }
 
@@ -719,7 +719,7 @@ size_t encodeCborBool(R, E)(auto ref R sink, E value)
 size_t encodeCborNull(R, E)(auto ref R sink, E value)
 	if(isOutputRange!(R, ubyte) && is(E == typeof(null)))
 {
-	sink.put(cast(ubyte)0xf6);
+	put(sink, cast(ubyte)0xf6);
 	return 1;
 }
 
@@ -729,7 +729,7 @@ size_t encodeCborRaw(R, E)(auto ref R sink, E value)
 {
 	auto size = encodeLongType(sink, 2, value.length);
 	size += value.length;
-	sink.put(value);
+	put(sink, value);
 	return size;
 }
 
@@ -739,7 +739,7 @@ size_t encodeCborString(R, E)(auto ref R sink, E value)
 {
 	auto size = encodeLongType(sink, 3, value.length);
 	size += value.length;
-	sink.put(cast(ubyte[])value);
+	put(sink, cast(ubyte[])value);
 	return size;
 }
 
@@ -981,6 +981,20 @@ T decodeCborSingle(T, R)(auto ref R input)
 {
 	CborValue value = decodeCbor(input);
 	return value.as!T;
+}
+
+/// Decodes single cbor value and tries to convert it to requested type.
+/// If types doesn't match CborException is thrown.
+/// Note, that this version will dup all arrays for you.
+T decodeCborSingleDup(T, R)(auto ref R input)
+	if(isInputRange!R && is(ElementType!R == ubyte))
+{
+	CborValue value = decodeCbor(input);
+
+	static if (is(T == E[], E))
+		return value.as!T.dup;
+	else
+		return value.as!T;
 }
 
 //------------------------------------------------------------------------------
@@ -1596,6 +1610,40 @@ unittest // decoding exact
 
 	foreach(i, m; resultClass.inner.tupleof)
 		assert(testClass.inner.tupleof[i] == m);
+}
+
+unittest // decoding with dup
+{
+	ubyte[128] buf1;
+	size_t size;
+
+	// with dup
+	size = encodeCbor(buf1[], cast(ubyte[])[0, 1, 2, 3, 4, 5]);
+	ubyte[] data = decodeCborSingleDup!(ubyte[])(buf1[0..size]);
+	buf1[] = 0;
+
+	assert(data == [0, 1, 2, 3, 4, 5]);
+
+	// without dup
+	size = encodeCbor(buf1[], cast(ubyte[])[0, 1, 2, 3, 4, 5]);
+	data = decodeCborSingle!(ubyte[])(buf1[0..size]);
+	buf1[] = 0;
+
+	assert(data == [0, 0, 0, 0, 0, 0]);
+
+	// dup is only needed for ubyte[] and string types,
+	// because they can be sliced from ubyte[] input range
+	size = encodeCbor(buf1[], [0, 1, 2, 3, 4, 5]); // int array
+	int[] intData = decodeCborSingle!(int[])(buf1[0..size]); // no dup
+	buf1[] = 0;
+
+	assert(intData == [0, 1, 2, 3, 4, 5]);
+
+	// also no slicing will occur if data was encoded as regular array and than
+	// ubyte[] retreived. integer[] -> ubyte[] cast would occur causing possible data loss.
+	// size = encodeCbor(buf1[], [0, 1, 2, 3, 4, 5]); // int array
+	// integer array cannot be decoded as ubyte[], only raw arrays can
+	// data = decodeCborSingle!(ubyte[])(buf1[0..size]); // CborException: Attempt to cast array to ubyte[]
 }
 
 private:

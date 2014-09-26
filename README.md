@@ -60,7 +60,10 @@
 
 	encodedSize = encodeCborArray(buffer[], test);
 
+	// ubyte[] and string types are slices of input ubyte[].
 	Test result = decodeCborSingle!Test(buffer[0..encodedSize]);
+
+	// decodeCborSingleDup can be used to auto-dup those types.
 
 	assert(test == result);
 ```
