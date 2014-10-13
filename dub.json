@@ -6,7 +6,7 @@
 
 	"importPaths" : [ "./" ],
 	"sourceFiles": ["cbor.d"],
-
+	"buildRequirements" : ["disallowDeprecations"],
 	"license": "BSL-1.0",
 
 	"targetType" : "library"

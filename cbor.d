@@ -844,6 +844,7 @@ size_t encodeCborAggregate(Flag!"WithFieldName" withFieldName, R, A)(auto ref R 
 /// Decodes single value and returns it as CborValue tagged union type.
 /// Throws CborException if data is not well-formed.
 /// Note, that ubyte[] and string types are slices of input range if ubyte[] was provided.
+/// Will modify input range, popping all the bytes of the first item.
 CborValue decodeCbor(R)(auto ref R input)
 	if(isInputRange!R && is(ElementType!R == ubyte))
 {
@@ -976,6 +977,7 @@ CborValue decodeCbor(R)(auto ref R input)
 /// Decodes single cbor value and tries to convert it to requested type.
 /// If types doesn't match CborException is thrown.
 /// Note, that ubyte[] and string types are slices of input range if ubyte[] was provided.
+/// Will modify input range, popping all the elements of T.
 T decodeCborSingle(T, R)(auto ref R input)
 	if(isInputRange!R && is(ElementType!R == ubyte))
 {
@@ -986,6 +988,7 @@ T decodeCborSingle(T, R)(auto ref R input)
 /// Decodes single cbor value and tries to convert it to requested type.
 /// If types doesn't match CborException is thrown.
 /// Note, that this version will dup all arrays for you.
+/// Will modify input range, popping all the elements of T.
 T decodeCborSingleDup(T, R)(auto ref R input)
 	if(isInputRange!R && is(ElementType!R == ubyte))
 {
@@ -1596,7 +1599,9 @@ unittest // decoding exact
 	testClass.inner = null;
 	
 	size = encodeCborArray(buf1[], testClass);
-	Test2 resultClass = decodeCborSingle!Test2(buf1[0..size]);
+	ubyte[] encodedBuf = buf1[0..size];
+	Test2 resultClass = decodeCborSingle!Test2(encodedBuf);
+	assert(encodedBuf.length == 0);
 
 	foreach(i, m; resultClass.tupleof)
 		assert(testClass.tupleof[i] == m);
