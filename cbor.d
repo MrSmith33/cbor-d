@@ -22,6 +22,8 @@ private import std.string : format;
 private import std.traits;
 private import std.typecons : Flag;
 
+//version = Cbor_Debug;
+
 /// Thrown in a case of decoding error.
 class CborException : Exception
 {
@@ -326,19 +328,29 @@ align(1) struct CborValue
 
 		T obj;
 
+		size_t arrLength = via.array.length;
+		size_t numMembers;
+
+		static if (isTuple!T)
+			numMembers = T.Types.length;
+		else
+			numMembers = numEncodableMembers!T;
+
+		if (arrLength != numMembers)
+		{
+			throw new CborException(
+				format("The number of deserialized members of %s is mismatched."~
+					" Got %s, while expected %s members",
+						T.stringof, numMembers, arrLength));
+		}
+
 		static if (isTuple!T)
 		{
-			if (via.array.length != T.Types.length)
-				throw new CborException("The number of deserialized Tuple element is mismatched");
-
 			foreach (i, Type; T.Types)
 				obj.field[i] = via.array[i].as!(Type);
 		}
 		else 
 		{  // simple struct
-			if (via.array.length != numEncodableMembers!T)
-				throw new CborException("The number of deserialized struct member is mismatched");
-
 			static if (is(T == class))
 				obj = new T();
 
@@ -579,7 +591,7 @@ align(1) struct CborValue
 //------------------------------------------------------------------------------
 
 
-private import std.range : isInputRange, isOutputRange, ElementType, put;
+private import std.range : isInputRange, isOutputRange, ElementType;
 private import std.typecons : isTuple;
 
 /// Encodes value E into output range sink.
@@ -637,23 +649,23 @@ private size_t encodeLongType(R)(auto ref R sink, ubyte majorType, ulong length)
 
 	majorType <<= 5;
 	if (length < 24) {
-		put(sink, cast(ubyte)(majorType | length));
+		putChecked(sink, cast(ubyte)(majorType | length));
 		return 1;
 	} else if (length <= ubyte.max) {
-		put(sink, cast(ubyte)(majorType | 24));
-		put(sink, cast(ubyte)length);
+		putChecked(sink, cast(ubyte)(majorType | 24));
+		putChecked(sink, cast(ubyte)length);
 		return 2;
 	} else if (length <= ushort.max) {
-		put(sink, cast(ubyte)(majorType | 25));
-		put(sink, nativeToBigEndian!ushort(cast(ushort)length)[]);
+		putChecked(sink, cast(ubyte)(majorType | 25));
+		putChecked(sink, nativeToBigEndian!ushort(cast(ushort)length)[]);
 		return 3;
 	} else if (length <= uint.max) {
-		put(sink, cast(ubyte)(majorType | 26));
-		put(sink, nativeToBigEndian!uint(cast(uint)length)[]);
+		putChecked(sink, cast(ubyte)(majorType | 26));
+		putChecked(sink, nativeToBigEndian!uint(cast(uint)length)[]);
 		return 5;
 	} else { // if (length <= ulong.max)
-		put(sink, cast(ubyte)(majorType | 27));
-		put(sink, nativeToBigEndian!ulong(cast(ulong)length)[]);
+		putChecked(sink, cast(ubyte)(majorType | 27));
+		putChecked(sink, nativeToBigEndian!ulong(cast(ulong)length)[]);
 		return 9;
 	}
 }
@@ -689,8 +701,8 @@ size_t encodeCborFloat(R, E)(auto ref R sink, E value)
 		
 		__FloatRep flt;
 		flt.f = value;
-		put(sink, cast(ubyte)(majorType | 26));
-		put(sink, nativeToBigEndian!uint(flt.u)[]);
+		putChecked(sink, cast(ubyte)(majorType | 26));
+		putChecked(sink, nativeToBigEndian!uint(flt.u)[]);
 		return 5;
 	}
 	else static if (is(E == double) || is(E == real))
@@ -698,8 +710,8 @@ size_t encodeCborFloat(R, E)(auto ref R sink, E value)
 		
 		__DoubleRep dbl;
 		dbl.d = cast(double)value;
-		put(sink, cast(ubyte)(majorType | 27));
-		put(sink, nativeToBigEndian!ulong(dbl.u)[]);
+		putChecked(sink, cast(ubyte)(majorType | 27));
+		putChecked(sink, nativeToBigEndian!ulong(dbl.u)[]);
 		return 9;
 	}
 }
@@ -709,9 +721,9 @@ size_t encodeCborBool(R, E)(auto ref R sink, E value)
 	if(isOutputRange!(R, ubyte) && isBoolean!E)
 {
 	if (value)
-		put(sink, cast(ubyte)0xf5);
+		putChecked(sink, cast(ubyte)0xf5);
 	else
-		put(sink, cast(ubyte)0xf4);
+		putChecked(sink, cast(ubyte)0xf4);
 	return 1;
 }
 
@@ -719,7 +731,8 @@ size_t encodeCborBool(R, E)(auto ref R sink, E value)
 size_t encodeCborNull(R, E)(auto ref R sink, E value)
 	if(isOutputRange!(R, ubyte) && is(E == typeof(null)))
 {
-	put(sink, cast(ubyte)0xf6);
+	
+	putChecked(sink, cast(ubyte)0xf6);
 	return 1;
 }
 
@@ -729,7 +742,7 @@ size_t encodeCborRaw(R, E)(auto ref R sink, E value)
 {
 	auto size = encodeLongType(sink, 2, value.length);
 	size += value.length;
-	put(sink, value);
+	putChecked(sink, value);
 	return size;
 }
 
@@ -739,7 +752,7 @@ size_t encodeCborString(R, E)(auto ref R sink, E value)
 {
 	auto size = encodeLongType(sink, 3, value.length);
 	size += value.length;
-	put(sink, cast(ubyte[])value);
+	putChecked(sink, cast(ubyte[])value);
 	return size;
 }
 
@@ -1008,6 +1021,25 @@ T decodeCborSingleDup(T, R)(auto ref R input)
 //		HH   HH EEEEEEE LLLLLLL PP      EEEEEEE RR   RR  SSSSS  
 //------------------------------------------------------------------------------
 
+private void putChecked(R, E)(ref R sink, const auto ref E e)
+{
+	import std.range : put, hasLength;
+	version(Cbor_Debug)
+	static if (hasLength!R)
+	{
+		size_t elemSize;
+
+		static if (hasLength!E)
+			elemSize = e.length * ElementType!E.sizeof;
+		else
+			elemSize = E.sizeof;
+
+		assert(sink.length >= elemSize,
+			format("Provided sink length is to small. Sink.$ %s < Data.$ %s", sink.length, elemSize));
+	}
+	put(sink, e);
+}
+
 private T readInteger(T, R)(auto ref R input)
 {
 	return readN!(T.sizeof, T, R)(input);
@@ -1120,7 +1152,7 @@ private template isEncodedField(T)
 	enum isEncodedField = __traits(compiles, { encodeCbor((ubyte[]).init, T.init); });
 }
 
-private template numEncodableMembers(alias T)
+template numEncodableMembers(alias T)
 {
 	enum numEncodableMembers = numEncodableMembersImpl!(T.tupleof);
 }
