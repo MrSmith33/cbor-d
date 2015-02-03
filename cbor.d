@@ -281,8 +281,14 @@ align(1) struct CborValue
 		{
 			if (type != Type.array)
 				onCastErrorToFrom!T(type);
-
-			V[] array = new V[via.array.length];
+			static if (isDynamicArray!T)
+			{
+				V[] array = new V[via.array.length];
+			}
+			else
+			{
+				T array = void;
+			}
 
 			foreach (i, elem; via.array)
 				array[i] = elem.as!(V);
@@ -617,7 +623,7 @@ size_t encodeCbor(R, E)(auto ref R sink, E value)
 	{
 		return encodeCborNull(sink, value);
 	}
-	else static if (isInputRange!E && is(ElementType!E == ubyte))
+	else static if ((isArray!E || isInputRange!E) && is(ElementType!E == ubyte))
 	{
 		return encodeCborRaw(sink, value);
 	}
@@ -731,18 +737,18 @@ size_t encodeCborBool(R, E)(auto ref R sink, E value)
 size_t encodeCborNull(R, E)(auto ref R sink, E value)
 	if(isOutputRange!(R, ubyte) && is(E == typeof(null)))
 {
-	
 	putChecked(sink, cast(ubyte)0xf6);
 	return 1;
 }
 
 /// Encodes range of ubytes.
 size_t encodeCborRaw(R, E)(auto ref R sink, E value)
-	if(isOutputRange!(R, ubyte) && is(ElementType!E == ubyte))
+	if(isOutputRange!(R, ubyte) &&
+		(isArray!E || isInputRange!E) && is(ElementType!E == ubyte))
 {
 	auto size = encodeLongType(sink, 2, value.length);
 	size += value.length;
-	putChecked(sink, value);
+	putChecked(sink, value[]);
 	return size;
 }
 
@@ -1152,6 +1158,7 @@ private template isEncodedField(T)
 	enum isEncodedField = __traits(compiles, { encodeCbor((ubyte[]).init, T.init); });
 }
 
+/// Returns a number of aggregate members that will be encoded by cbor-d.
 template numEncodableMembers(alias T)
 {
 	enum numEncodableMembers = numEncodableMembersImpl!(T.tupleof);
@@ -1681,6 +1688,22 @@ unittest // decoding with dup
 	// size = encodeCbor(buf1[], [0, 1, 2, 3, 4, 5]); // int array
 	// integer array cannot be decoded as ubyte[], only raw arrays can
 	// data = decodeCborSingle!(ubyte[])(buf1[0..size]); // CborException: Attempt to cast array to ubyte[]
+}
+
+unittest // static arrays
+{
+	ubyte[128] buf;
+	size_t size;
+
+	// raw static array
+	size = encodeCbor(buf[], cast(ubyte[6])[0, 1, 2, 3, 4, 5]);
+	ubyte[6] data1 = decodeCborSingle!(ubyte[6])(buf[0..size]);
+	assert(data1 == [0, 1, 2, 3, 4, 5]);
+
+	// regular static array
+	size = encodeCbor(buf[], cast(int[6])[0, 1, 2, 3, 4, 5]);
+	int[6] data2 = decodeCborSingle!(int[6])(buf[0..size]);
+	assert(data2 == [0, 1, 2, 3, 4, 5]);
 }
 
 private:
