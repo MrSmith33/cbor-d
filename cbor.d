@@ -619,11 +619,11 @@ size_t encodeCbor(R, E)(auto ref R sink, E value)
 	{
 		return encodeCborBool(sink, value);
 	}
-	else static if (is(E == typeof(null)))
+	else static if (is(Unqual!E == typeof(null)))
 	{
 		return encodeCborNull(sink, value);
 	}
-	else static if ((isArray!E || isInputRange!E) && is(ElementType!E == ubyte))
+	else static if ((isArray!E || isInputRange!E) && is(Unqual!(ElementType!E) == ubyte))
 	{
 		return encodeCborRaw(sink, value);
 	}
@@ -702,18 +702,16 @@ size_t encodeCborFloat(R, E)(auto ref R sink, E value)
 	enum majorType = 7 << 5;
 
 
-	static if (is(E == float))
+	static if (is(Unqual!E == float))
 	{
-		
 		__FloatRep flt;
 		flt.f = value;
 		putChecked(sink, cast(ubyte)(majorType | 26));
 		putChecked(sink, nativeToBigEndian!uint(flt.u)[]);
 		return 5;
 	}
-	else static if (is(E == double) || is(E == real))
+	else static if (is(Unqual!E == double) || is(Unqual!E == real))
 	{
-		
 		__DoubleRep dbl;
 		dbl.d = cast(double)value;
 		putChecked(sink, cast(ubyte)(majorType | 27));
@@ -735,7 +733,7 @@ size_t encodeCborBool(R, E)(auto ref R sink, E value)
 
 /// Encodes null.
 size_t encodeCborNull(R, E)(auto ref R sink, E value)
-	if(isOutputRange!(R, ubyte) && is(E == typeof(null)))
+	if(isOutputRange!(R, ubyte) && is(Unqual!E == typeof(null)))
 {
 	putChecked(sink, cast(ubyte)0xf6);
 	return 1;
@@ -744,7 +742,7 @@ size_t encodeCborNull(R, E)(auto ref R sink, E value)
 /// Encodes range of ubytes.
 size_t encodeCborRaw(R, E)(auto ref R sink, E value)
 	if(isOutputRange!(R, ubyte) &&
-		(isArray!E || isInputRange!E) && is(ElementType!E == ubyte))
+		(isArray!E || isInputRange!E) && is(Unqual!(ElementType!E) == ubyte))
 {
 	auto size = encodeLongType(sink, 2, value.length);
 	size += value.length;
@@ -767,7 +765,7 @@ size_t encodeCborArray(R, E)(auto ref R sink, E value)
 	if(isOutputRange!(R, ubyte) &&
 	(isInputRange!E || isArray!E || isTuple!E))
 {
-	static if (is(E == void[])) // accept []
+	static if (isArray!E && is(Unqual!(ElementType!E) == void)) // accept []
 	{
 		return encodeCborArrayHead(sink, 0);
 	}
@@ -873,7 +871,6 @@ CborValue decodeCbor(R)(auto ref R input)
 	// tags will be ignored and decoding will restart from here
 	start_label:
 
-	assert(!input.empty);
 	if (input.empty) onInsufficientInput();
 
 	ubyte item = input.front;
@@ -1027,7 +1024,7 @@ T decodeCborSingleDup(T, R)(auto ref R input)
 //		HH   HH EEEEEEE LLLLLLL PP      EEEEEEE RR   RR  SSSSS  
 //------------------------------------------------------------------------------
 
-private void putChecked(R, E)(ref R sink, const auto ref E e)
+private void putChecked(R, E)(ref R sink, auto ref E e)
 {
 	import std.range : put, hasLength;
 	version(Cbor_Debug)
@@ -1308,11 +1305,24 @@ version(unittest)
 	}
 	private void cmpEncoded(T)(T value, string encodedStr)
 	{
-		assert(encodedString(value) == encodedStr);
+		auto encoded = encodedString(value);
+		assert(encoded == encodedStr, format("%s != %s", encoded, encodedStr));
+	}
+	private void cmpEncodedConst(T)(T value, string encodedStr)
+	{
+		auto encoded = encodedString(cast(const)value);
+		assert(encoded == encodedStr, format("%s != %s", encoded, encodedStr));
 	}
 }
 
 unittest // encoding
+{
+	testEncoding!cmpEncoded();
+	testEncoding!cmpEncodedConst();
+}
+
+version(unittest)
+private void testEncoding(alias cmpEncoded)()
 {
 	// Test vectors
 	cmpEncoded(0, "0x00");
@@ -1704,6 +1714,14 @@ unittest // static arrays
 	size = encodeCbor(buf[], cast(int[6])[0, 1, 2, 3, 4, 5]);
 	int[6] data2 = decodeCborSingle!(int[6])(buf[0..size]);
 	assert(data2 == [0, 1, 2, 3, 4, 5]);
+}
+
+unittest // const
+{
+	ubyte[1024] buf;
+	size_t size = encodeCbor(buf[], cast(const)0.0);
+
+	double cam2 = decodeCborSingle!double(buf[0..size]);
 }
 
 private:
