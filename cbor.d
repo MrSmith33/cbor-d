@@ -839,7 +839,7 @@ size_t encodeCborAggregate(Flag!"WithFieldName" withFieldName, R, A)(auto ref R 
 	size += encodeCborArrayHead(sink, numEncodableMembers!A);
 	foreach(i, member; aggregate.tupleof)
 	{
-		static if (__traits(compiles, { encodeCbor(sink, member); }))
+		static if (isEncodedField!(typeof(member)))
 		{
 			static if (withFieldName)
 				size += encodeCborString(sink, __traits(identifier, aggregate.tupleof[i]));
@@ -1152,7 +1152,10 @@ private union __DoubleRep { double d; ulong u; string toString(){return format("
 
 private template isEncodedField(T)
 {
-	enum isEncodedField = __traits(compiles, { encodeCbor((ubyte[]).init, T.init); });
+	enum isEncodedField = isIntegral!T || isFloatingPoint!T || isBoolean!T ||
+		is(Unqual!T == typeof(null)) || isArray!T || isInputRange!T ||
+		isTuple!T || is(T == string) || is(T == class) || is(T == struct) ||
+		isAssociativeArray!T;
 }
 
 /// Returns a number of aggregate members that will be encoded by cbor-d.
@@ -1167,7 +1170,7 @@ private template numEncodableMembersImpl(members ...)
 		enum numEncodableMembersImpl = 0;
 	else
 		enum numEncodableMembersImpl = 
-			cast(int)__traits(compiles, { encodeCbor(cast(ubyte[])null, members[0].init); }) +
+			cast(int)isEncodedField!(typeof(members[0])) +
 			numEncodableMembersImpl!(members[1..$]);
 }
 
@@ -1722,6 +1725,30 @@ unittest // const
 	size_t size = encodeCbor(buf[], cast(const)0.0);
 
 	double cam2 = decodeCborSingle!double(buf[0..size]);
+}
+
+unittest // using output range
+{
+	import std.array : Appender;
+
+	Appender!(ubyte[]) buffer;
+	ubyte[] testData = [0, 1, 2, 3, 4, 5];
+
+	size_t size = encodeCbor(buffer, testData);
+
+	assert(testData == decodeCborSingle!(ubyte[])(buffer.data));
+}
+
+unittest // recursive type
+{
+	import std.array : Appender;
+
+	Appender!(ubyte[]) a;
+	class Class
+	{
+		Class[] groups;
+	}
+	encodeCborArray(a, Class[].init);
 }
 
 private:
