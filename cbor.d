@@ -20,7 +20,10 @@ module cbor;
 
 private import std.string : format;
 private import std.traits;
-private import std.typecons : Flag;
+private import std.typecons : Flag, TypeTuple;
+private import std.range : ElementEncodingType;
+private import std.conv : to;
+private import std.utf : byChar;
 
 //version = Cbor_Debug;
 
@@ -205,6 +208,18 @@ align(1) struct CborValue
 		assert(false);
 	}
 
+	/// ditto
+	@property @trusted
+	T as(T)() if (isSomeChar!T && !is(Unqual!T == enum))
+	{
+		if (type == Type.posinteger)
+			return cast(T)via.uinteger;
+
+		onCastErrorToFrom!T(type);
+
+		assert(false);
+	}
+
 
 	/// ditto
 	@property @trusted
@@ -229,8 +244,6 @@ align(1) struct CborValue
 	@property @trusted
 	T as(T)() if (isArray!T && !is(Unqual!T == enum))
 	{
-		alias V = typeof(T.init[0]);
-
 		if (type == Type.nil)
 		{
 			static if (isDynamicArray!T)
@@ -243,7 +256,7 @@ align(1) struct CborValue
 			}
 		}
 
-		static if (is(V == ubyte))
+		static if (is(Unqual!(ElementType!T) == ubyte))
 		{
 			if (type != Type.raw)
 				onCastErrorToFrom!T(type);
@@ -260,25 +273,36 @@ align(1) struct CborValue
 				return cast(T)(via.raw[0 .. T.length]);
 			}
 		}
-		else static if(is(T == string))
+		else static if(isSomeChar!(Unqual!(ElementEncodingType!T)))
 		{
 			if (type != Type.text)
 				onCastErrorToFrom!T(type);
 
 			static if (isDynamicArray!T)
 			{
-				return cast(T)via.text;
+				return via.text.to!T;
 			}
 			else
 			{
 				if (via.text.length != T.length)
 					onCastErrorToFrom!T(type);
 
-				return cast(T)(via.text[0 .. T.length]);
+				static if (is(Unqual!(ElementEncodingType!T) == char))
+				{
+					return cast(T)via.text[0 .. T.length];
+				}
+				else
+				{
+					alias V = Unqual!(ElementEncodingType!T);
+					V[] array = via.text.to!(V[]);
+					return cast(T)array[0 .. T.length];
+				}
 			}
 		}
 		else
 		{
+			alias V = Unqual!(ElementType!T);
+
 			if (type != Type.array)
 				onCastErrorToFrom!T(type);
 			static if (isDynamicArray!T)
@@ -293,7 +317,7 @@ align(1) struct CborValue
 			foreach (i, elem; via.array)
 				array[i] = elem.as!(V);
 
-			return array;
+			return cast(T)array;
 		}
 	}
 
@@ -611,6 +635,10 @@ size_t encodeCbor(R, E)(auto ref R sink, E value)
 	{
 		return encodeCborInt(sink, value);
 	}
+	else static if (isSomeChar!E)
+	{
+		return encodeCborInt(sink, cast(ulong)value);
+	}
 	else static if (isFloatingPoint!E)
 	{
 		return encodeCborFloat(sink, value);
@@ -627,7 +655,7 @@ size_t encodeCbor(R, E)(auto ref R sink, E value)
 	{
 		return encodeCborRaw(sink, value);
 	}
-	else static if (is(E == string))
+	else static if ((isArray!E || isInputRange!E) && isSomeChar!(Unqual!(ElementEncodingType!E)))
 	{
 		return encodeCborString(sink, value);
 	}
@@ -752,11 +780,21 @@ size_t encodeCborRaw(R, E)(auto ref R sink, E value)
 
 /// Encodes string.
 size_t encodeCborString(R, E)(auto ref R sink, E value)
-	if(isOutputRange!(R, ubyte) && is(E == string))
+	if(isOutputRange!(R, ubyte) && isSomeChar!(Unqual!(ElementEncodingType!E)))
 {
 	auto size = encodeLongType(sink, 3, value.length);
 	size += value.length;
-	putChecked(sink, cast(ubyte[])value);
+	static if (is(Unqual!(ElementEncodingType!E) == char))
+	{
+		putChecked(sink, cast(ubyte[])value);
+	}
+	else
+	{
+		foreach(char elem; value[].byChar)
+		{
+			putChecked(sink, cast(ubyte)elem);
+		}
+	}
 	return size;
 }
 
@@ -1316,12 +1354,18 @@ version(unittest)
 		auto encoded = encodedString(cast(const)value);
 		assert(encoded == encodedStr, format("%s != %s", encoded, encodedStr));
 	}
+	private void cmpEncodedImmutable(T)(T value, string encodedStr)
+	{
+		auto encoded = encodedString(cast(immutable)value);
+		assert(encoded == encodedStr, format("%s != %s", encoded, encodedStr));
+	}
 }
 
 unittest // encoding
 {
 	testEncoding!cmpEncoded();
 	testEncoding!cmpEncodedConst();
+	testEncoding!cmpEncodedImmutable();
 }
 
 version(unittest)
@@ -1749,6 +1793,95 @@ unittest // recursive type
 		Class[] groups;
 	}
 	encodeCborArray(a, Class[].init);
+}
+
+unittest // char arrays
+{
+	ubyte[1024] buf;
+
+	size_t size = encodeCbor(buf[], cast(char[])"abc");
+	char[] str1 = decodeCborSingle!(char[])(buf[0..size]);
+	assert(str1 == "abc");
+
+	size = encodeCbor(buf[], cast(const char[])"abc");
+	const char[] str2 = decodeCborSingle!(const char[])(buf[0..size]);
+	assert(str2 == "abc");
+
+	size = encodeCbor(buf[], cast(immutable char[])"abc");
+	immutable char[] str3 = decodeCborSingle!(immutable char[])(buf[0..size]);
+	assert(str3 == "abc");
+}
+
+unittest // char wchar dchar
+{
+	ubyte[1024] buf;
+	char testChar = 'c';
+
+	size_t size = encodeCbor(buf[], cast(char)testChar);
+	char chr = decodeCborSingle!(char)(buf[0..size]);
+	assert(chr == testChar);
+
+	size = encodeCbor(buf[], cast(wchar)testChar);
+	wchar wchr = decodeCborSingle!(wchar)(buf[0..size]);
+	assert(wchr == testChar);
+
+	size = encodeCbor(buf[], cast(dchar)testChar);
+	dchar dchr = decodeCborSingle!(dchar)(buf[0..size]);
+	assert(dchr == testChar);
+
+	size = encodeCbor(buf[], cast(const char)testChar);
+	const char constchr = decodeCborSingle!(const char)(buf[0..size]);
+	assert(constchr == testChar);
+
+	size = encodeCbor(buf[], cast(const wchar)testChar);
+	const wchar constwchr = decodeCborSingle!(const wchar)(buf[0..size]);
+	assert(constwchr == testChar);
+
+	size = encodeCbor(buf[], cast(immutable dchar)testChar);
+	immutable dchar immdchr = decodeCborSingle!(immutable dchar)(buf[0..size]);
+	assert(immdchr == testChar);
+}
+
+unittest // wstring dstring; static char wchar dchar arrays
+{
+	ubyte[1024] buf;
+
+	size_t size = encodeCbor(buf[], "hello"w);
+	wstring wstr = decodeCborSingle!(wstring)(buf[0..size]);
+	assert(wstr == "hello"w);
+
+	size = encodeCbor(buf[], "hello"d);
+	dstring dstr = decodeCborSingle!(dstring)(buf[0..size]);
+	assert(dstr == "hello"d);
+
+	size = encodeCbor(buf[], cast(char[5])"hello");
+	char[5] str1 = decodeCborSingle!(char[5])(buf[0..size]);
+	assert(str1 == "hello");
+
+	size = encodeCbor(buf[], cast(wchar[5])"hello");
+	wchar[5] wstr1 = decodeCborSingle!(wchar[5])(buf[0..size]);
+	assert(wstr1 == "hello"w);
+
+	size = encodeCbor(buf[], cast(dchar[5])"hello");
+	dchar[5] dstr1 = decodeCborSingle!(dchar[5])(buf[0..size]);
+	assert(dstr1 == "hello"d);
+}
+
+unittest // char[] wchar[] dchar[]
+{
+	ubyte[1024] buf;
+
+	size_t size = encodeCbor(buf[], cast(char[])"hello");
+	char[] str1 = decodeCborSingle!(char[])(buf[0..size]);
+	assert(str1 == "hello");
+
+	size = encodeCbor(buf[], cast(wchar[])"hello");
+	wchar[] wstr1 = decodeCborSingle!(wchar[])(buf[0..size]);
+	assert(wstr1 == "hello"w);
+
+	size = encodeCbor(buf[], cast(dchar[])"hello");
+	dchar[] dstr1 = decodeCborSingle!(dchar[])(buf[0..size]);
+	assert(dstr1 == "hello"d);
 }
 
 private:
