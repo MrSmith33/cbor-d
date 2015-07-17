@@ -1089,9 +1089,9 @@ private T readInteger(T, R)(auto ref R input)
 private T readN(ubyte size, T, R)(auto ref R input)
 	if(isInputRange!R && is(ElementType!R == ubyte))
 {
-	import std.algorithm : copy, take;
+	import std.algorithm : copy;
 	import std.bitmanip : bigEndianToNative;
-	import std.range : dropExactly;
+	import std.range : dropExactly, take;
 	
 	static assert(T.sizeof == size);
 	static assert(size > 0);
@@ -1122,8 +1122,8 @@ private void dropBytes(R)(auto ref R input, ulong length)
 private ubyte[] readBytes(R)(auto ref R input, ulong length)
 	if(isInputRange!R && is(ElementType!R == ubyte))
 {
-	import std.algorithm : take;
 	import std.array;
+	import std.range : take;
 	if (input.length < length) onInsufficientInput();
 
 	static if (size_t.sizeof < ulong.sizeof)
