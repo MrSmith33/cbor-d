@@ -20,7 +20,7 @@ module cbor;
 
 private import std.string : format;
 private import std.traits;
-private import std.typecons : Flag, TypeTuple;
+private import std.typecons : Flag, TypeTuple, Yes, No;
 private import std.range : ElementEncodingType;
 private import std.conv : to;
 private import std.utf : byChar;
@@ -626,7 +626,8 @@ private import std.typecons : isTuple;
 
 /// Encodes value E into output range sink.
 /// Returns number of bytes written to sink.
-size_t encodeCbor(R, E)(auto ref R sink, E value)
+/// If flatten flag is yes then static arrays and structs will be encoded in place without headers.
+size_t encodeCbor(Flag!"Flatten" flatten = No.Flatten, R, E)(auto ref R sink, E value)
 	if(isOutputRange!(R, ubyte))
 {
 	import std.typecons : isTuple;
@@ -653,16 +654,16 @@ size_t encodeCbor(R, E)(auto ref R sink, E value)
 	}
 	else static if ((isArray!E || isInputRange!E) && is(Unqual!(ElementType!E) == ubyte))
 	{
-		return encodeCborRaw(sink, value);
+		return encodeCborRaw!(flatten)(sink, value);
 	}
 	else static if ((isArray!E || isInputRange!E) && isSomeChar!(Unqual!(ElementEncodingType!E)))
 	{
-		return encodeCborString(sink, value);
+		return encodeCborString!(flatten)(sink, value);
 	}
 	else static if (isInputRange!E || isArray!E || isTuple!E ||
 		is(E == class) || is(E == struct))
 	{
-		return encodeCborArray(sink, value);
+		return encodeCborArray!(flatten)(sink, value);
 	}
 	else static if (isAssociativeArray!E)
 	{
@@ -679,7 +680,6 @@ private size_t encodeLongType(R)(auto ref R sink, ubyte majorType, ulong length)
 	if(isOutputRange!(R, ubyte))
 {
 	import std.bitmanip : nativeToBigEndian;
-	import std.array;
 
 	majorType <<= 5;
 	if (length < 24) {
@@ -768,22 +768,33 @@ size_t encodeCborNull(R, E)(auto ref R sink, E value)
 }
 
 /// Encodes range of ubytes.
-size_t encodeCborRaw(R, E)(auto ref R sink, E value)
+size_t encodeCborRaw(Flag!"Flatten" flatten = No.Flatten, R, E)(auto ref R sink, E value)
 	if(isOutputRange!(R, ubyte) &&
 		(isArray!E || isInputRange!E) && is(Unqual!(ElementType!E) == ubyte))
 {
-	auto size = encodeLongType(sink, 2, value.length);
+	size_t size = 0;
+	// drop type and length for static arrays in flatten mode
+	static if (!needsFlattening!(E, flatten))
+	{
+		size = encodeLongType(sink, 2, value.length);
+	}
 	size += value.length;
 	putChecked(sink, value[]);
 	return size;
 }
 
 /// Encodes string.
-size_t encodeCborString(R, E)(auto ref R sink, E value)
+size_t encodeCborString(Flag!"Flatten" flatten = No.Flatten, R, E)(auto ref R sink, E value)
 	if(isOutputRange!(R, ubyte) && isSomeChar!(Unqual!(ElementEncodingType!E)))
 {
-	auto size = encodeLongType(sink, 3, value.length);
+	size_t size = 0;
+	// drop type and length for static arrays in flatten mode
+	static if (!needsFlattening!(E, flatten))
+	{
+		size = encodeLongType(sink, 3, value.length);
+	}
 	size += value.length;
+
 	static if (is(Unqual!(ElementEncodingType!E) == char))
 	{
 		putChecked(sink, cast(ubyte[])value);
@@ -799,7 +810,7 @@ size_t encodeCborString(R, E)(auto ref R sink, E value)
 }
 
 /// Encodes array of any items or a tuple as cbor array.
-size_t encodeCborArray(R, E)(auto ref R sink, E value)
+size_t encodeCborArray(Flag!"Flatten" flatten = No.Flatten, R, E)(auto ref R sink, E value)
 	if(isOutputRange!(R, ubyte) &&
 	(isInputRange!E || isArray!E || isTuple!E))
 {
@@ -809,27 +820,31 @@ size_t encodeCborArray(R, E)(auto ref R sink, E value)
 	}
 	else
 	{
-		auto size = encodeCborArrayHead(sink, value.length);
+		size_t size = 0;
+		// drop type and length for static arrays and expression tuples in flatten mode
+		static if (!needsFlattening!(E, flatten))
+			size = encodeCborArrayHead(sink, value.length);
+
 		foreach(item; value)
-			size += encodeCbor(sink, item);
+			size += encodeCbor!(flatten)(sink, item);
 		return size;
 	}
 }
 
 /// Encodes structs and classes as cbor array.
-size_t encodeCborArray(R, A)(auto ref R sink, A aggregate)
+size_t encodeCborArray(Flag!"Flatten" flatten = No.Flatten, R, A)(auto ref R sink, A aggregate)
 	if(isOutputRange!(R, ubyte) &&
 		(is(A == struct) || is(A == class)) &&
 		!isTuple!A)
 {
-	return encodeCborAggregate!(Flag!"WithFieldName".no)(sink, aggregate);
+	return encodeCborAggregate!(Flag!"WithFieldName".no, flatten)(sink, aggregate);
 }
 
 /// Encodes asociative array as cbor map.
 size_t encodeCborMap(R, E)(auto ref R sink, E value)
 	if(isOutputRange!(R, ubyte) && isAssociativeArray!E)
 {
-	auto size = encodeCborMapHead(sink, value.length);
+	size_t size = encodeCborMapHead(sink, value.length);
 	foreach(key, element; value)
 	{
 		size += encodeCbor(sink, key);
@@ -840,12 +855,12 @@ size_t encodeCborMap(R, E)(auto ref R sink, E value)
 
 /// Encodes structs and classes as cbor map.
 /// Note, that decoding of structs and classes from maps is not supported (yet).
-size_t encodeCborMap(R, A)(auto ref R sink, A aggregate)
+size_t encodeCborMap(Flag!"Flatten" flatten = Flag!"Flatten".no, R, A)(auto ref R sink, A aggregate)
 	if(isOutputRange!(R, ubyte) &&
 		(is(A == struct) || is(A == class)) &&
 		!isTuple!A)
 {
-	return encodeCborAggregate!(Flag!"WithFieldName".yes)(sink, aggregate);
+	return encodeCborAggregate!(Flag!"WithFieldName".yes, flatten)(sink, aggregate);
 }
 
 /// Encode array head with arrayLength elements.
@@ -866,7 +881,14 @@ size_t encodeCborMapHead(R)(auto ref R sink, ulong mapLength)
 
 /// Encodes classes and structs. If withFieldName is yes, than value is encoded as map.
 /// If withFieldName is no, then value is encoded as an array.
-size_t encodeCborAggregate(Flag!"WithFieldName" withFieldName, R, A)(auto ref R sink, auto ref A aggregate)
+/// If flatten flag is yes then static arrays and structs will be encoded in place without headers.
+size_t encodeCborAggregate(
+	Flag!"WithFieldName" withFieldName,
+	Flag!"Flatten" flatten = Flag!"Flatten".no,
+	R,
+	A)(
+	auto ref R sink,
+	auto ref A aggregate)
 	if (isOutputRange!(R, ubyte) && (is(A == struct) || is(A == class)))
 {
 	size_t size;
@@ -874,14 +896,27 @@ size_t encodeCborAggregate(Flag!"WithFieldName" withFieldName, R, A)(auto ref R 
 		if (aggregate is null)
 			return encodeCbor(sink, null);
 
-	size += encodeCborArrayHead(sink, numEncodableMembers!A);
+	// flatten structs only
+	static if (!needsFlattening!(A, flatten))
+	{
+		static if (withFieldName)
+			size += encodeCborMapHead(sink, numEncodableMembers!A);
+		else
+			size += encodeCborArrayHead(sink, numEncodableMembers!A);
+	}
+
 	foreach(i, member; aggregate.tupleof)
 	{
 		static if (isEncodedField!(typeof(member)))
 		{
+			// when encoded as map order is unspecified and flatten is not possible
 			static if (withFieldName)
+			{
 				size += encodeCborString(sink, __traits(identifier, aggregate.tupleof[i]));
-			size += encodeCbor(sink, member);
+				size += encodeCbor(sink, member);
+			}
+			else
+				size += encodeCbor!flatten(sink, member);
 		}
 	}
 	return size;
@@ -1032,7 +1067,7 @@ CborValue decodeCbor(R)(auto ref R input)
 /// If types doesn't match CborException is thrown.
 /// Note, that ubyte[] and string types are slices of input range if ubyte[] was provided.
 /// Will modify input range, popping all the elements of T.
-T decodeCborSingle(T, R)(auto ref R input)
+T decodeCborSingle(T, Flag!"Flatten" flatten = No.Flatten, R)(auto ref R input)
 	if(isInputRange!R && is(ElementType!R == ubyte))
 {
 	CborValue value = decodeCbor(input);
@@ -1043,7 +1078,7 @@ T decodeCborSingle(T, R)(auto ref R input)
 /// If types doesn't match CborException is thrown.
 /// Note, that this version will dup all arrays for you.
 /// Will modify input range, popping all the elements of T.
-T decodeCborSingleDup(T, R)(auto ref R input)
+T decodeCborSingleDup(T, Flag!"Flatten" flatten = No.Flatten, R)(auto ref R input)
 	if(isInputRange!R && is(ElementType!R == ubyte))
 {
 	CborValue value = decodeCbor(input);
@@ -1061,6 +1096,17 @@ T decodeCborSingleDup(T, R)(auto ref R input)
 //		HH   HH EE      LL      PP      EE      RR  RR       SS 
 //		HH   HH EEEEEEE LLLLLLL PP      EEEEEEE RR   RR  SSSSS  
 //------------------------------------------------------------------------------
+
+/// Tests if type can be encoded in flat mode, i.e. without header
+template canBeFlattened(T)
+{
+	enum bool canBeFlattened =
+		isStaticArray!T ||
+		(isTuple!T && isExpressions!T) ||
+		is(T == struct);
+}
+
+enum bool needsFlattening(T, Flag!"Flatten" flatten) = canBeFlattened!T && flatten;
 
 private void putChecked(R, E)(ref R sink, auto ref E e)
 {
@@ -1153,8 +1199,9 @@ private CborValue[] readArray(R)(auto ref R input, ulong length)
 		if (length > size_t.max)
 			throw new CborException(format("Array size is too big %s", length));
 
+	import std.array : uninitializedArray;
 	size_t arrayLength = cast(size_t)length;
-	CborValue[] result = new CborValue[arrayLength]; // can use uninitializedArray
+	CborValue[] result = uninitializedArray!(CborValue[])(arrayLength);
 	foreach(ref elem; result)
 	{
 		elem = decodeCbor(input);
@@ -1172,7 +1219,7 @@ private CborValue[CborValue] readMap(R)(auto ref R input, ulong length)
 			throw new CborException(format("Map size is too big: %s", length));
 
 	size_t mapLength = cast(size_t)length;
-	CborValue[CborValue] result; // can use uninitializedArray
+	CborValue[CborValue] result;
 	foreach(i; 0..mapLength)
 	{
 		auto key = decodeCbor(input);
@@ -1442,12 +1489,13 @@ private void testEncoding(alias cmpEncoded)()
 	// AA
 	uint[uint] emptyAA;
 	cmpEncoded(emptyAA, "0xa0");
-	cmpEncoded([1:2, 3:4], "0xa201020304");
+	cmpEncoded([1:2], "0xa10102");
 	
 	//cmpEncoded({"a": 1, "b": [2, 3]}, "0xa26161016162820203");
 	//cmpEncoded(["a", {"b": "c"}], "0x826161a161626163");
-	cmpEncoded(["a": "A", "b": "B", "c":"C", "d": "D", "e": "E"],
-		"0xa56161614161626142616361436164614461656145");
+	// Impossible to test because with latest dmd order of elements is changed and is not predictable
+	//cmpEncoded(["a": "A", "b": "B", "c":"C", "d": "D", "e": "E"],
+	//	"0xa56161614161626142616361436164614461656145");
 	//cmpEncoded((_ h'0102', h'030405'), "0x5f42010243030405ff");
 	//cmpEncoded((_ "strea", "ming"), "0x7f657374726561646d696e67ff");
 	//cmpEncoded([_ ], "0x9fff");
@@ -1619,7 +1667,7 @@ unittest // test tag ignoring
 	assert(decodeCbor(cast(ubyte[])[0xdb, 0, 0, 0, 0, 0, 0, 0, 0, 0x18, ubyte.max]) == ubyte.max);
 }
 
-///
+/// structs, classes, tuples
 unittest // decoding exact
 {
 	static struct Inner
@@ -1882,6 +1930,49 @@ unittest // char[] wchar[] dchar[]
 	size = encodeCbor(buf[], cast(dchar[])"hello");
 	dchar[] dstr1 = decodeCborSingle!(dchar[])(buf[0..size]);
 	assert(dstr1 == "hello"d);
+}
+
+// flatten mode
+unittest
+{
+	ubyte[128] buf;
+	size_t size;
+
+	size = encodeCbor(buf[], cast(ubyte[2])[1, 2]);
+	assert(toHexString(buf[0..size]) == "0x420102");
+
+	// Raw
+	size = encodeCbor!(Yes.Flatten)(buf[], cast(ubyte[2])[1, 2]);
+	assert(toHexString(buf[0..size]) == "0x0102");
+
+	// Array
+	size = encodeCbor!(Yes.Flatten)(buf[], cast(int[2])[1, 2]);
+	assert(toHexString(buf[0..size]) == "0x0102");
+
+	// String
+	size = encodeCbor!(Yes.Flatten)(buf[], cast(immutable(char)[1])"a");
+	assert(toHexString(buf[0..size]) == "0x61");
+
+	// Tuple
+	import std.typecons : tuple;
+	size = encodeCbor!(Yes.Flatten)(buf[], tuple(1, 2));
+	assert(toHexString(buf[0..size]) == "0x0102");
+
+	// Struct
+	static struct A {
+		int a, b;
+	}
+	static struct B {
+		A a;
+	}
+	static struct C {
+		B b;
+	}
+	static struct D {
+		C c;
+	}
+	size = encodeCbor!(Yes.Flatten)(buf[], D(C(B(A(1, 2)))));
+	assert(toHexString(buf[0..size]) == "0x0102");
 }
 
 private:
