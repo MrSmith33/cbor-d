@@ -20,7 +20,7 @@ module cbor;
 
 private import std.string : format;
 private import std.traits;
-private import std.typecons : Flag, TypeTuple, Yes, No;
+private import std.typecons : Flag, Yes, No;
 private import std.range : ElementEncodingType;
 private import std.conv : to;
 private import std.utf : byChar;
@@ -79,7 +79,7 @@ align(1) struct CborValue
 		string text;
 	}
 
-	Type type;
+	Type type = Type.nil;
 	Via via;
 
 	/**
@@ -90,7 +90,7 @@ align(1) struct CborValue
 	 *  type  = the type of value.
 	 */
 	@safe
-	this(Type type = Type.nil)
+	this(Type type)
 	{
 		this.type = type;
 	}
