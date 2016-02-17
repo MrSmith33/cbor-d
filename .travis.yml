@@ -2,11 +2,13 @@ sudo: false
 
 os:
  - linux
+ - osx
 
 language: d
 
 d:
  - dmd-2.070.0
+ - dmd-2.069.2
  - dmd-2.068.2
  - dmd-2.067.1
 
@@ -15,6 +17,7 @@ env:
     - ARCH=x86
     - ARCH=x86_64
 
+# enable 32 bit compilation on 64 bit worker
 addons:
   apt:
     packages:

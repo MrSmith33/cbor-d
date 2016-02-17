@@ -19,7 +19,8 @@ Standards: Conforms to RFC 7049.
 module cbor;
 
 private import std.string : format;
-private import std.traits;
+private import std.traits : Unqual, isArray, isAssociativeArray, isBoolean, isDynamicArray,
+	isExpressionTuple, isFloatingPoint, isIntegral, isSomeChar, isStaticArray, isUnsigned;
 private import std.typecons : Flag, Yes, No;
 private import std.range : ElementEncodingType;
 private import std.conv : to;
@@ -1102,7 +1103,7 @@ template canBeFlattened(T)
 {
 	enum bool canBeFlattened =
 		isStaticArray!T ||
-		(isTuple!T && isExpressions!T) ||
+		(isTuple!T && isExpressionTuple!T) ||
 		is(T == struct);
 }
 
