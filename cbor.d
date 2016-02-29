@@ -1,9 +1,7 @@
 /**
-Copyright: Copyright (c) 2014 Andrey Penechko.
-License: a$(WEB boost.org/LICENSE_1_0.txt, Boost License 1.0).
+Copyright: Copyright (c) 2014-2016 Andrey Penechko.
+License: $(WEB boost.org/LICENSE_1_0.txt, Boost License 1.0).
 Authors: Andrey Penechko.
-
-Some code is based on msgpack-d by Masahiro Nakagawa.
 
 Concise Binary Object Representation (CBOR) for D lang.
 
@@ -22,596 +20,9 @@ private import std.string : format;
 private import std.traits : Unqual, isArray, isAssociativeArray, isBoolean, isDynamicArray,
 	isExpressionTuple, isFloatingPoint, isIntegral, isSomeChar, isStaticArray, isUnsigned;
 private import std.typecons : Flag, Yes, No;
-private import std.range : ElementEncodingType;
+private import std.range : ElementEncodingType, hasLength, save;
 private import std.conv : to;
 private import std.utf : byChar;
-
-//version = Cbor_Debug;
-
-/// Thrown in a case of decoding error.
-class CborException : Exception
-{
-	@trusted pure this(string message, string file = __FILE__, size_t line = __LINE__)
-	{
-		super(message, file, line);
-	}
-}
-
-//------------------------------------------------------------------------------
-//		 SSSSS  TTTTTTT  OOOOO  RRRRRR    AAA     GGGG  EEEEEEE 
-//		SS        TTT   OO   OO RR   RR  AAAAA   GG  GG EE      
-//		 SSSSS    TTT   OO   OO RRRRRR  AA   AA GG      EEEEE   
-//		     SS   TTT   OO   OO RR  RR  AAAAAAA GG   GG EE      
-//		 SSSSS    TTT    OOOO0  RR   RR AA   AA  GGGGGG EEEEEEE 
-//------------------------------------------------------------------------------
-
-/// Tagged union for CBOR items.
-align(1) struct CborValue
-{
-	align(1):
-	enum Type : ubyte
-	{
-		boolean,
-		nil,
-		undefined,
-
-		posinteger,
-		neginteger,
-		floating,
-		
-		array,
-		map,
-		
-		raw,
-		text,
-	}
-
-	static union Via
-	{
-		bool boolean;
-		long integer;
-		ulong uinteger;
-		double floating;
-		
-		CborValue[] array;
-		CborValue[CborValue] map;
-		
-		ubyte[] raw;
-		string text;
-	}
-
-	Type type = Type.nil;
-	Via via;
-
-	/**
-	 * Constructs a $(D CborValue) with arguments.
-	 *
-	 * Params:
-	 *  value = the real content.
-	 *  type  = the type of value.
-	 */
-	@safe
-	this(Type type)
-	{
-		this.type = type;
-	}
-
-	@safe
-	this(typeof(null))
-	{
-		this(Type.nil);
-	}
-
-	/// ditto
-	@trusted
-	this(bool value, Type type = Type.boolean)
-	{
-		this(type);
-		via.boolean = value;
-	}
-
-
-	/// ditto
-	@trusted
-	this(T)(T value) if (isIntegral!T)
-	{
-		if (value < 0)
-		{
-			this(Type.neginteger);
-			via.integer = value;
-		}
-		else
-		{
-			this(Type.posinteger);
-			via.uinteger = value;
-		}
-	}
-
-
-	/// ditto
-	@trusted
-	this(T)(T value, Type type = Type.floating) if (isFloatingPoint!T)
-	{
-		this(type);
-		via.floating = value;
-	}
-
-
-	/// ditto
-	@trusted
-	this(CborValue[] value, Type type = Type.array)
-	{
-		this(type);
-		via.array = value;
-	}
-
-
-	/// ditto
-	@trusted
-	this(CborValue[CborValue] value, Type type = Type.map)
-	{
-		this(type);
-		via.map = value;
-	}
-
-
-	/// ditto
-	@trusted
-	this(ubyte[] value, Type type = Type.raw)
-	{
-		this(type);
-		via.raw = value;
-	}
-
-	/// ditto
-	@trusted
-	this(string value, Type type = Type.text)
-	{
-		this(type);
-		via.text = value;
-	}
-
-
-	/**
-	 * Converts value to $(D_PARAM T) type.
-	 *
-	 * Returns:
-	 *  converted value.
-	 *
-	 * Throws:
-	 *  CborException if type is mismatched.
-	 *
-	 * NOTE:
-	 *  Current implementation uses cast.
-	 */
-	@property @trusted
-	T as(T)() if (is(Unqual!T == bool))
-	{
-		if (type != Type.boolean)
-			onCastErrorToFrom!T(type);
-
-		return via.boolean;
-	}
-
-
-	/// ditto
-	@property @trusted
-	T as(T)() if (isIntegral!T && !is(Unqual!T == enum))
-	{
-		if (type == Type.neginteger)
-			return cast(T)via.integer;
-
-		if (type == Type.posinteger)
-			return cast(T)via.uinteger;
-
-		onCastErrorToFrom!T(type);
-
-		assert(false);
-	}
-
-	/// ditto
-	@property @trusted
-	T as(T)() if (isSomeChar!T && !is(Unqual!T == enum))
-	{
-		if (type == Type.posinteger)
-			return cast(T)via.uinteger;
-
-		onCastErrorToFrom!T(type);
-
-		assert(false);
-	}
-
-
-	/// ditto
-	@property @trusted
-	T as(T)() if (isFloatingPoint!T && !is(Unqual!T == enum))
-	{
-		if (type != Type.floating)
-			onCastErrorToFrom!T(type);
-
-		return cast(T)via.floating;
-	}
-
-
-	/// ditto
-	@property @trusted
-	T as(T)() if (is(Unqual!T == enum))
-	{
-		return cast(T)as!(OriginalType!T);
-	}
-
-
-	/// ditto
-	@property @trusted
-	T as(T)() if (isArray!T && !is(Unqual!T == enum))
-	{
-		if (type == Type.nil)
-		{
-			static if (isDynamicArray!T)
-			{
-				return null;
-			}
-			else
-			{
-				return T.init;
-			}
-		}
-
-		static if (is(Unqual!(ElementType!T) == ubyte))
-		{
-			if (type != Type.raw)
-				onCastErrorToFrom!T(type);
-
-			static if (isDynamicArray!T)
-			{
-				return cast(T)via.raw;
-			}
-			else
-			{
-				if (via.raw.length != T.length)
-					onCastErrorToFrom!T(type);
-
-				return cast(T)(via.raw[0 .. T.length]);
-			}
-		}
-		else static if(isSomeChar!(Unqual!(ElementEncodingType!T)))
-		{
-			if (type != Type.text)
-				onCastErrorToFrom!T(type);
-
-			static if (isDynamicArray!T)
-			{
-				return via.text.to!T;
-			}
-			else
-			{
-				if (via.text.length != T.length)
-					onCastErrorToFrom!T(type);
-
-				static if (is(Unqual!(ElementEncodingType!T) == char))
-				{
-					return cast(T)via.text[0 .. T.length];
-				}
-				else
-				{
-					alias V = Unqual!(ElementEncodingType!T);
-					V[] array = via.text.to!(V[]);
-					return cast(T)array[0 .. T.length];
-				}
-			}
-		}
-		else
-		{
-			alias V = Unqual!(ElementType!T);
-
-			if (type != Type.array)
-				onCastErrorToFrom!T(type);
-			static if (isDynamicArray!T)
-			{
-				V[] array = new V[via.array.length];
-			}
-			else
-			{
-				T array = void;
-			}
-
-			foreach (i, elem; via.array)
-				array[i] = elem.as!(V);
-
-			return cast(T)array;
-		}
-	}
-
-
-	/// ditto
-	@property @trusted
-	T as(T)() if (isAssociativeArray!T)
-	{
-		alias K = typeof(T.init.keys[0]);
-		alias V = typeof(T.init.values[0]);
-
-		if (type == Type.nil)
-			return null;
-
-		if (type != Type.map)
-			onCastErrorToFrom!T(type);
-
-		V[K] map;
-
-		foreach (key, value; via.map)
-			map[key.as!(K)] = value.as!(V);
-
-		return map;
-	}
-
-
-	/// ditto
-	@property @trusted
-	T as(T)()
-		if (is(T == struct) || is(T == class) || isTuple!T)
-	{
-		static if (is(T == class))
-			if (type == CborValue.Type.nil)
-				return null;
-
-		if (type != CborValue.Type.array)
-			throw new CborException(format("Can not decode %s from %s", T.stringof, type));
-
-		T obj;
-
-		size_t arrLength = via.array.length;
-		size_t numMembers;
-
-		static if (isTuple!T)
-			numMembers = T.Types.length;
-		else
-			numMembers = numEncodableMembers!T;
-
-		if (arrLength != numMembers)
-		{
-			throw new CborException(
-				format("The number of deserialized members of %s is mismatched."~
-					" Got %s, while expected %s members",
-						T.stringof, numMembers, arrLength));
-		}
-
-		static if (isTuple!T)
-		{
-			foreach (i, Type; T.Types)
-				obj.field[i] = via.array[i].as!(Type);
-		}
-		else 
-		{  // simple struct
-			static if (is(T == class))
-				obj = new T();
-
-			foreach(i, ref member; obj.tupleof)
-			{
-				static if (isEncodedField!(typeof(member)))
-					member = via.array[i].as!(typeof(member));
-			}
-		}
-
-		return obj;
-	}
-
-
-	/// Comparison for equality.
-	@trusted
-	bool opEquals()(auto ref const CborValue other) const
-	{
-		if (type != other.type)
-			return false;
-	
-		final switch(other.type)
-		{
-			case Type.boolean: return opEquals(other.via.boolean);
-			case Type.nil: return type == Type.nil;
-			case Type.undefined: return type == Type.undefined;
-			case Type.neginteger: return opEquals(other.via.integer);
-			case Type.posinteger: return opEquals(other.via.uinteger);
-			case Type.floating: return opEquals(other.via.floating);
-			case Type.array: return opEquals(other.via.array);
-			case Type.map: return opEquals(other.via.map);
-			case Type.raw: return opEquals(other.via.raw);
-			case Type.text: return opEquals(other.via.text);
-		}
-	}
-
-
-	/// ditto
-	@trusted
-	bool opEquals(T : bool)(const T other) const
-	{
-		if (type != Type.boolean)
-			return false;
-
-		return via.boolean == other;
-	}
-
-
-	/// ditto
-	@trusted
-	bool opEquals(T)(const T other) const if (isIntegral!T && !is(T == typeof(null)))
-	{
-		static if (isUnsigned!T)
-		{
-			if (type == Type.posinteger)
-				return via.uinteger == other;
-			else
-				return false;
-		}
-		else
-		{
-			if (type == Type.neginteger || type == Type.posinteger)
-				return via.integer == other;
-			else
-				return false;
-		}
-	}
-
-
-	/// ditto
-	@trusted
-	bool opEquals(T)(const T other) const if (isFloatingPoint!T)
-	{
-		if (type != Type.floating)
-			return false;
-
-		return via.floating == other;
-	}
-
-
-	/// ditto
-	@trusted
-	bool opEquals(T)(const typeof(null) other) const if (is(T == typeof(null)))
-	{
-		if (type == Type.array || type == Type.raw || type == Type.text)
-		{
-			return via.raw.length == 0;
-		}
-		else if (type == Type.map)
-		{
-			return via.map.length == 0;
-		}
-
-		return false;
-	}
-
-
-	/// ditto
-	@trusted
-	bool opEquals(T : const CborValue[])(const T other) const if (!is(T == typeof(null)))
-	{
-		if (type != Type.array)
-			return false;
-
-		return via.array == other;
-	}
-
-	/// ditto
-	@trusted
-	bool opEquals(T : const(V)[], V)(const T other) const if (!is(T == typeof(null)))
-	{
-		if (type != Type.array)
-			return false;
-
-		if (other.length != via.array.length) return false;
-
-		auto arr = via.array;
-
-		foreach(i, ref item; other)
-		{
-			if (item != arr[i]) return false;
-		}
-
-		return true;
-	}
-
-
-	/// ditto
-	@trusted
-	bool opEquals(T : const CborValue[CborValue])(const T other) const if (!is(T == typeof(null)))
-	{
-		if (type != Type.map)
-			return false;
-
-		// This comparison is instead of default comparison because 'via.map == other' raises "Access Violation".
-		foreach (key, value; via.map) {
-			if (key in other) {
-				if (other[key] != value)
-					return false;
-			} else {
-				return false;
-			}
-		}
-
-		return true;
-	}
-
-	/// ditto
-	@trusted
-	bool opEquals(T : const V[K], K, V)(const T other) const if (!is(T == typeof(null)))
-	{
-		if (type != Type.map)
-			return false;
-
-		// This comparison is instead of default comparison because 'via.map == other' raises "Access Violation".
-		auto map = via.map;
-
-		if (map.length != other.length) return false;
-
-		foreach (key, value; other) {
-			if (auto thisVal = CborValue(key) in map) {
-				if (*thisVal != value)
-					return false;
-			} else {
-				return false;
-			}
-		}
-
-		return true;
-	}
-
-
-	/// ditto
-	@trusted
-	bool opEquals(T : const(ubyte)[])(const T other) const if (!is(T == typeof(null)))
-	{
-		if (type != Type.raw)
-			return false;
-
-		return via.raw == other;
-	}
-
-
-	/// ditto
-	@trusted
-	bool opEquals(T : string)(const T other) const if (!is(T == typeof(null)))
-	{
-		if (type != Type.text)
-			return false;
-
-		return via.text == other;
-	}
-
-	/// Hashing.
-	size_t toHash() const nothrow @trusted
-	{
-		final switch(type)
-		{
-			case Type.boolean: return typeid(bool).getHash(&via.boolean);
-			case Type.nil: return 0;
-			case Type.undefined: return size_t.max;
-			case Type.neginteger: return typeid(long).getHash(&via.integer);
-			case Type.posinteger: return typeid(ulong).getHash(&via.uinteger);
-			case Type.floating: return typeid(real).getHash(&via.floating);
-			case Type.array: return typeid(CborValue[]).getHash(&via.array);
-			case Type.map: return typeid(CborValue[CborValue]).getHash(&via.map);
-			case Type.raw: return typeid(ubyte[]).getHash(&via.raw);
-			case Type.text: return typeid(string).getHash(&via.text);
-		}
-	}
-
-	/// String representation.
-	string toString()
-	{
-		import std.string : format;
-		final switch(type)
-		{
-			case Type.boolean: return format("CborValue(%s)", via.boolean);
-			case Type.nil: return "CborValue(null)";
-			case Type.undefined: return "CborValue(undefined)";
-			case Type.neginteger: return format("CborValue(%s, %s)", type, via.integer);
-			case Type.posinteger: return format("CborValue(%s, %s)", type, via.uinteger);
-			case Type.floating: return format("CborValue(%s, %s)", type, via.floating);
-			case Type.array: return format("CborValue(%s, %s)", type, via.array);
-			case Type.map: return format("CborValue(%s, %s)", type, via.map);
-			case Type.raw: return format("CborValue(%s, %s)", type, via.raw);
-			case Type.text: return format("CborValue(%s, \"%s\")", type, via.text);
-		}
-	}
-}
 
 //------------------------------------------------------------------------------
 //		EEEEEEE NN   NN  CCCCC   OOOOO  DDDDD   IIIII NN   NN   GGGG  
@@ -621,60 +32,12 @@ align(1) struct CborValue
 //		EEEEEEE NN   NN  CCCCC   OOOO0  DDDDDD  IIIII NN   NN  GGGGGG 
 //------------------------------------------------------------------------------
 
-
 private import std.range : isInputRange, isOutputRange, ElementType;
 private import std.typecons : isTuple;
 
-/// Encodes value E into output range sink.
-/// Returns number of bytes written to sink.
-/// If flatten flag is yes then static arrays and structs will be encoded in place without headers.
-size_t encodeCbor(Flag!"Flatten" flatten = No.Flatten, R, E)(auto ref R sink, E value)
-	if(isOutputRange!(R, ubyte))
-{
-	import std.typecons : isTuple;
-
-	static if (isIntegral!E)
-	{
-		return encodeCborInt(sink, value);
-	}
-	else static if (isSomeChar!E)
-	{
-		return encodeCborInt(sink, cast(ulong)value);
-	}
-	else static if (isFloatingPoint!E)
-	{
-		return encodeCborFloat(sink, value);
-	}
-	else static if (isBoolean!E)
-	{
-		return encodeCborBool(sink, value);
-	}
-	else static if (is(Unqual!E == typeof(null)))
-	{
-		return encodeCborNull(sink, value);
-	}
-	else static if ((isArray!E || isInputRange!E) && is(Unqual!(ElementType!E) == ubyte))
-	{
-		return encodeCborRaw!(flatten)(sink, value);
-	}
-	else static if ((isArray!E || isInputRange!E) && isSomeChar!(Unqual!(ElementEncodingType!E)))
-	{
-		return encodeCborString!(flatten)(sink, value);
-	}
-	else static if (isInputRange!E || isArray!E || isTuple!E ||
-		is(E == class) || is(E == struct))
-	{
-		return encodeCborArray!(flatten)(sink, value);
-	}
-	else static if (isAssociativeArray!E)
-	{
-		return encodeCborMap(sink, value);
-	}
-	else
-	{
-		static assert(false, "Unable to encode " ~ E.stringof);
-	}
-}
+//------------------------------------------------------------------------------
+// Simple types (int, float, bool, null, undefined, break, simple)
+//------------------------------------------------------------------------------
 
 // Encode integer types as separate type or as part of arrays or map.
 private size_t encodeLongType(R)(auto ref R sink, ubyte majorType, ulong length)
@@ -730,7 +93,6 @@ size_t encodeCborFloat(R, E)(auto ref R sink, E value)
 	import std.bitmanip : nativeToBigEndian;
 	enum majorType = 7 << 5;
 
-
 	static if (is(Unqual!E == float))
 	{
 		__FloatRep flt;
@@ -761,15 +123,189 @@ size_t encodeCborBool(R, E)(auto ref R sink, E value)
 }
 
 /// Encodes null.
-size_t encodeCborNull(R, E)(auto ref R sink, E value)
-	if(isOutputRange!(R, ubyte) && is(Unqual!E == typeof(null)))
+size_t encodeCborNull(R)(auto ref R sink)
+	if(isOutputRange!(R, ubyte))
 {
 	putChecked(sink, cast(ubyte)0xf6);
 	return 1;
 }
 
+/// Encodes undefined.
+size_t encodeCborUndefined(R)(auto ref R sink) if(isOutputRange!(R, ubyte))
+{
+	putChecked(sink, cast(ubyte)0xf7);
+	return 1;
+}
+
+/// Encodes break. Use after all items of indefinite-length sequence were encoded.
+size_t encodeCborBreak(R)(auto ref R sink) if(isOutputRange!(R, ubyte))
+{
+	putChecked(sink, cast(ubyte)0xff);
+	return 1;
+}
+
+/// Encodes simple. Simple data type is essentially a number that has special meaning.
+/// Value must lie in range [0..23] or [32..255].
+size_t encodeCborSimple(R)(auto ref R sink, ubyte simple) if(isOutputRange!(R, ubyte))
+{
+	enum ubyte majorType = 7 << 5;
+	if (simple < 24) {
+		putChecked(sink, cast(ubyte)(majorType | simple));
+		return 1;
+	} else if (simple > 31) {
+		putChecked(sink, cast(ubyte)0xf8);
+		putChecked(sink, simple);
+		return 2;
+	} else {
+		assert(false, format("Invalid simple value %s", simple));
+	}
+}
+
+//------------------------------------------------------------------------------
+// Complex data (byte-string, text-string, array, map)
+//------------------------------------------------------------------------------
+// Headers
+//------------------------------------------------------------------------------
+
+size_t encodeCborBytesHeader(R)(auto ref R sink, ulong bytesLength) if(isOutputRange!(R, ubyte))
+{
+	return encodeLongType(sink, 2, bytesLength);
+}
+
+size_t encodeCborBytesHeader(R)(auto ref R sink) if(isOutputRange!(R, ubyte))
+{
+	putChecked(sink, cast(ubyte)0x5f);
+	return 1;
+}
+
+size_t encodeCborStringHeader(R)(auto ref R sink, ulong textLength) if(isOutputRange!(R, ubyte))
+{
+	return encodeLongType(sink, 3, textLength);
+}
+
+size_t encodeCborStringHeader(R)(auto ref R sink) if(isOutputRange!(R, ubyte))
+{
+	putChecked(sink, cast(ubyte)0x7f);
+	return 1;
+}
+
+size_t encodeCborArrayHeader(R)(auto ref R sink, ulong arrayLength) if(isOutputRange!(R, ubyte))
+{
+	return encodeLongType(sink, 4, arrayLength);
+}
+
+size_t encodeCborArrayHeader(R)(auto ref R sink) if(isOutputRange!(R, ubyte))
+{
+	putChecked(sink, cast(ubyte)0x9f);
+	return 1;
+}
+
+size_t encodeCborMapHeader(R)(auto ref R sink, ulong mapLength) if(isOutputRange!(R, ubyte))
+{
+	return encodeLongType(sink, 5, mapLength);
+}
+
+size_t encodeCborMapHeader(R)(auto ref R sink) if(isOutputRange!(R, ubyte))
+{
+	putChecked(sink, cast(ubyte)0xbf);
+	return 1;
+}
+
+//------------------------------------------------------------------------------
+// Items
+//------------------------------------------------------------------------------
+
+/// Writes range of ubyte to the sink. Needs to go after a call to encodeCborBytesHeader.
+/// The length of supplied range must be equal to one provided to encodeCborBytesHeader.
+size_t encodeCborBytesItems(R, D)(auto ref R sink, D bytes)
+	if(isOutputRange!(R, ubyte) &&
+		(isArray!D || isInputRange!D) && is(Unqual!(ElementType!D) == ubyte))
+{
+	static if (hasLength!D) {
+		static if (isStaticArray!D)
+			putChecked(sink, bytes[]);
+		else
+			putChecked(sink, bytes);
+		return bytes.length;
+	} else {
+		size_t count;
+		putChecked(sink, bytes.tee!(a => ++count));
+		return count;
+	}
+}
+
+//------------------------------------------------------------------------------
+// Tag
+//------------------------------------------------------------------------------
+
+///
+size_t encodeCborTag(R)(auto ref R sink, ulong value) if(isOutputRange!(R, ubyte))
+{
+	return encodeLongType(sink, 6, value);
+}
+
+//------------------------------------------------------------------------------
+//	 SSSSS  EEEEEEE RRRRRR  IIIII   AAA   LL      IIIII ZZZZZ   AAA   TTTTTTT IIIII  OOOOO  NN   NN 
+//	SS      EE      RR   RR  III   AAAAA  LL       III     ZZ  AAAAA    TTT    III  OO   OO NNN  NN 
+//	 SSSSS  EEEEE   RRRRRR   III  AA   AA LL       III    ZZ  AA   AA   TTT    III  OO   OO NN N NN 
+//	     SS EE      RR  RR   III  AAAAAAA LL       III   ZZ   AAAAAAA   TTT    III  OO   OO NN  NNN 
+//	 SSSSS  EEEEEEE RR   RR IIIII AA   AA LLLLLLL IIIII ZZZZZ AA   AA   TTT   IIIII  OOOO0  NN   NN 
+//	                                                                                                
+//------------------------------------------------------------------------------
+
+/// Encodes value E into output range sink.
+/// Returns number of bytes written to sink.
+/// If flatten flag is yes then static arrays and structs will be encoded in place without headers.
+size_t encodeCbor(Flag!"Flatten" flatten = No.Flatten, R, E)(auto ref R sink, auto ref const E value)
+	if(isOutputRange!(R, ubyte))
+{
+	import std.typecons : isTuple;
+
+	static if (isIntegral!E)
+	{
+		return encodeCborInt(sink, value);
+	}
+	else static if (isSomeChar!E)
+	{
+		return encodeCborInt(sink, cast(ulong)value);
+	}
+	else static if (isFloatingPoint!E)
+	{
+		return encodeCborFloat(sink, value);
+	}
+	else static if (isBoolean!E)
+	{
+		return encodeCborBool(sink, value);
+	}
+	else static if (is(Unqual!E == typeof(null)))
+	{
+		return encodeCborNull(sink);
+	}
+	else static if ((isArray!E || isInputRange!E) && is(Unqual!(ElementType!E) == ubyte))
+	{
+		return encodeCborBytes!(flatten)(sink, value);
+	}
+	else static if ((isArray!E || isInputRange!E) && isSomeChar!(Unqual!(ElementEncodingType!E)))
+	{
+		return encodeCborString!(flatten)(sink, value);
+	}
+	else static if (isInputRange!E || isArray!E || isTuple!E ||
+		is(E == class) || is(E == struct))
+	{
+		return encodeCborArray!(flatten)(sink, value);
+	}
+	else static if (isAssociativeArray!E)
+	{
+		return encodeCborMap(sink, value);
+	}
+	else
+	{
+		static assert(false, "Unable to encode " ~ E.stringof);
+	}
+}
+
 /// Encodes range of ubytes.
-size_t encodeCborRaw(Flag!"Flatten" flatten = No.Flatten, R, E)(auto ref R sink, E value)
+size_t encodeCborBytes(Flag!"Flatten" flatten = No.Flatten, R, E)(auto ref R sink, E value)
 	if(isOutputRange!(R, ubyte) &&
 		(isArray!E || isInputRange!E) && is(Unqual!(ElementType!E) == ubyte))
 {
@@ -777,10 +313,9 @@ size_t encodeCborRaw(Flag!"Flatten" flatten = No.Flatten, R, E)(auto ref R sink,
 	// drop type and length for static arrays in flatten mode
 	static if (!needsFlattening!(E, flatten))
 	{
-		size = encodeLongType(sink, 2, value.length);
+		size = encodeCborBytesHeader(sink, value.length);
 	}
-	size += value.length;
-	putChecked(sink, value[]);
+	size += encodeCborBytesItems(sink, value);
 	return size;
 }
 
@@ -792,7 +327,7 @@ size_t encodeCborString(Flag!"Flatten" flatten = No.Flatten, R, E)(auto ref R si
 	// drop type and length for static arrays in flatten mode
 	static if (!needsFlattening!(E, flatten))
 	{
-		size = encodeLongType(sink, 3, value.length);
+		size = encodeCborStringHeader(sink, value.length);
 	}
 	size += value.length;
 
@@ -817,14 +352,14 @@ size_t encodeCborArray(Flag!"Flatten" flatten = No.Flatten, R, E)(auto ref R sin
 {
 	static if (isArray!E && is(Unqual!(ElementType!E) == void)) // accept []
 	{
-		return encodeCborArrayHead(sink, 0);
+		return encodeCborArrayHeader(sink, 0);
 	}
 	else
 	{
 		size_t size = 0;
 		// drop type and length for static arrays and expression tuples in flatten mode
 		static if (!needsFlattening!(E, flatten))
-			size = encodeCborArrayHead(sink, value.length);
+			size = encodeCborArrayHeader(sink, value.length);
 
 		foreach(item; value)
 			size += encodeCbor!(flatten)(sink, item);
@@ -845,7 +380,7 @@ size_t encodeCborArray(Flag!"Flatten" flatten = No.Flatten, R, A)(auto ref R sin
 size_t encodeCborMap(R, E)(auto ref R sink, E value)
 	if(isOutputRange!(R, ubyte) && isAssociativeArray!E)
 {
-	size_t size = encodeCborMapHead(sink, value.length);
+	size_t size = encodeCborMapHeader(sink, value.length);
 	foreach(key, element; value)
 	{
 		size += encodeCbor(sink, key);
@@ -857,27 +392,9 @@ size_t encodeCborMap(R, E)(auto ref R sink, E value)
 /// Encodes structs and classes as cbor map.
 /// Note, that decoding of structs and classes from maps is not supported (yet).
 size_t encodeCborMap(Flag!"Flatten" flatten = Flag!"Flatten".no, R, A)(auto ref R sink, A aggregate)
-	if(isOutputRange!(R, ubyte) &&
-		(is(A == struct) || is(A == class)) &&
-		!isTuple!A)
+	if(isOutputRange!(R, ubyte) && (is(A == struct) || is(A == class)) && !isTuple!A)
 {
 	return encodeCborAggregate!(Flag!"WithFieldName".yes, flatten)(sink, aggregate);
-}
-
-/// Encode array head with arrayLength elements.
-/// arrayLength items must follow.
-size_t encodeCborArrayHead(R)(auto ref R sink, ulong arrayLength)
-	if(isOutputRange!(R, ubyte))
-{
-	return encodeLongType(sink, 4, arrayLength);
-}
-
-/// Encode map head with mapLength elements.
-/// mapLength pairs of items must follow. Keys first, then values.
-size_t encodeCborMapHead(R)(auto ref R sink, ulong mapLength)
-	if(isOutputRange!(R, ubyte))
-{
-	return encodeLongType(sink, 5, mapLength);
 }
 
 /// Encodes classes and structs. If withFieldName is yes, than value is encoded as map.
@@ -901,9 +418,9 @@ size_t encodeCborAggregate(
 	static if (!needsFlattening!(A, flatten))
 	{
 		static if (withFieldName)
-			size += encodeCborMapHead(sink, numEncodableMembers!A);
+			size += encodeCborMapHeader(sink, numEncodableMembers!A);
 		else
-			size += encodeCborArrayHead(sink, numEncodableMembers!A);
+			size += encodeCborArrayHeader(sink, numEncodableMembers!A);
 	}
 
 	foreach(i, member; aggregate.tupleof)
@@ -924,6 +441,114 @@ size_t encodeCborAggregate(
 }
 
 //------------------------------------------------------------------------------
+//		 SSSSS  TTTTTTT  OOOOO  RRRRRR    AAA     GGGG  EEEEEEE 
+//		SS        TTT   OO   OO RR   RR  AAAAA   GG  GG EE      
+//		 SSSSS    TTT   OO   OO RRRRRR  AA   AA GG      EEEEE   
+//		     SS   TTT   OO   OO RR  RR  AAAAAAA GG   GG EE      
+//		 SSSSS    TTT    OOOO0  RR   RR AA   AA  GGGGGG EEEEEEE 
+//------------------------------------------------------------------------------
+
+///
+enum CborTokenType : ubyte
+{
+	/// CborToken.uinteger stores array length.
+	/// Indefinite-length array has no length.
+	/// Header is followed by zero or more data items, terminated by break.
+	arrayHeader = 0b000,
+	arrayIndefiniteHeader = 0b001, /// ditto
+
+	/// CborToken.uinteger stores map's pair count.
+	/// Indefinite-length map has no length.
+	/// Header is followed by zero or more pairs, terminated by break.
+	mapHeader = 0b010,
+	mapIndefiniteHeader = 0b011, /// ditto
+	
+	/// CborToken.uinteger stores byte string length.
+	/// Indefinite-length byte string has no length.
+	/// Header is follower by zero or more definite-length byte strings terminated by break.
+	bytesHeader = 0b100,
+	bytesIndefiniteHeader = 0b101, /// ditto
+
+	/// CborToken.uinteger stores text string length.
+	/// Indefinite-length text string has no length.
+	/// Header is follower by zero or more definite-length text strings terminated by break.
+	textHeader = 0b110,
+	textIndefiniteHeader = 0b111, /// ditto
+
+	undefined, /// CborToken value is undefined.
+	nil, /// CborToken value is null.
+	boolean, /// CborToken.boolean stores actual value.
+	tag, /// uinteger stores tag value.
+	simple, /// Simple value is integer in range [0-255], stored in uinteger.
+	breakCode, /// "break" stop code, used to terminate indefinite-length sequences.
+
+	posinteger, /// CborToken.uinteger stores actual value.
+	neginteger, /// CborToken.integer stores actual value.
+	floating, /// CborToken.floating stores actual value.
+}
+
+///
+struct CborToken
+{
+	CborTokenType type;
+	union
+	{
+		bool boolean;
+		long integer;
+		// used for storing positive integers, array, map, raw and text size
+		double floating;
+		ulong uinteger;
+	}
+
+	this(CborTokenType t) {
+		type = t;
+	}
+	this(CborTokenType t, bool v) {
+		type = t;
+		boolean = v;
+	}
+	this(CborTokenType t, long v) {
+		type = t;
+		integer = v;
+	}
+	this(CborTokenType t, double v) {
+		type = t;
+		floating = v;
+	}
+
+	bool opEquals(const CborToken other) {
+		ubyte[] thisRep = (cast(ubyte*)(&this))[0..this.sizeof];
+		ubyte[] otherRep = (cast(ubyte*)(&other))[0..other.sizeof];
+		return thisRep == otherRep;
+	}
+
+	string toString()
+	{
+		import std.string : format;
+		final switch(type) with(CborTokenType)
+		{
+			case boolean: return format("CborToken(%s)", boolean);
+			case nil: return "CborToken(null)";
+			case undefined: return "CborToken(undefined)";
+			case tag: return format("CborToken(tag, %s)", type, uinteger);
+			case simple: return format("CborToken(simple, %s)", uinteger);
+			case breakCode: return format("CborToken(break)");
+			case posinteger: return format("CborToken(%s, %s)", type, uinteger);
+			case neginteger: return format("CborToken(%s, %s)", type, integer);
+			case floating: return format("CborToken(%s, %s)", type, floating);
+			case arrayHeader: return format("CborToken(array, %s)", uinteger);
+			case arrayIndefiniteHeader: return format("CborToken(arrayIndefiniteLength, _)");
+			case mapHeader: return format("CborToken(map, %s)", uinteger);
+			case mapIndefiniteHeader: return format("CborToken(mapIndefiniteLength, _)");
+			case bytesHeader: return format("CborToken(byteString, %s)", uinteger);
+			case bytesIndefiniteHeader: return format("CborToken(byteStringIndefiniteLength, _)");
+			case textHeader: return format("CborToken(textString, %s)", uinteger);
+			case textIndefiniteHeader: return format("CborToken(textStringIndefiniteLength, _)");
+		}
+	}
+}
+
+//------------------------------------------------------------------------------
 //		DDDDD   EEEEEEE  CCCCC   OOOOO  DDDDD   IIIII NN   NN   GGGG  
 //		DD  DD  EE      CC    C OO   OO DD  DD   III  NNN  NN  GG  GG 
 //		DD   DD EEEEE   CC      OO   OO DD   DD  III  NN N NN GG      
@@ -931,19 +556,11 @@ size_t encodeCborAggregate(
 //		DDDDDD  EEEEEEE  CCCCC   OOOO0  DDDDDD  IIIII NN   NN  GGGGGG 
 //------------------------------------------------------------------------------
 
-
-/// Decodes single value and returns it as CborValue tagged union type.
-/// Throws CborException if data is not well-formed.
-/// Note, that ubyte[] and string types are slices of input range if ubyte[] was provided.
-/// Will modify input range, popping all the bytes of the first item.
-CborValue decodeCbor(R)(auto ref R input)
+CborToken decodeCborToken(R)(auto ref R input)
 	if(isInputRange!R && is(ElementType!R == ubyte))
 {
 	import std.array;
 	import std.bitmanip;
-	
-	// tags will be ignored and decoding will restart from here
-	start_label:
 
 	if (input.empty) onInsufficientInput();
 
@@ -953,110 +570,106 @@ CborValue decodeCbor(R)(auto ref R input)
 	switch(item)
 	{
 		case 0x00: .. case 0x17: // Integer 0x00..0x17 (0..23)
-			return CborValue(item);
+			return CborToken(CborTokenType.posinteger, item);
 		case 0x18: // Unsigned integer (one-byte uint8_t follows)
-			return CborValue(readInteger!ubyte(input));
+			return CborToken(CborTokenType.posinteger, readInteger!ubyte(input));
 		case 0x19: // Unsigned integer (two-byte uint16_t follows)
-			return CborValue(readInteger!ushort(input));
-		case 0x1a: // Unsigned integer (four-byte uint_t follows)
-			return CborValue(readInteger!uint(input));
+			return CborToken(CborTokenType.posinteger, readInteger!ushort(input));
+		case 0x1a: // Unsigned integer (four-byte uint32_t follows)
+			return CborToken(CborTokenType.posinteger, readInteger!uint(input));
 		case 0x1b: // Unsigned integer (eight-byte uint64_t follows)
-			return CborValue(readInteger!ulong(input));
+			return CborToken(CborTokenType.posinteger, readInteger!ulong(input));
 		case 0x20: .. case 0x37: // Negative integer -1-0x00..-1-0x17 (-1..-24)
-			return CborValue(cast(byte)(-1 - item + 0x20));
+			return CborToken(CborTokenType.neginteger, cast(byte)(-1 - item + 0x20));
 		case 0x38: // Negative integer -1-n (one-byte uint8_t for n follows)
-			return CborValue(-1 - cast(long)readInteger!ubyte(input));
+			return CborToken(CborTokenType.neginteger, -1 - cast(long)readInteger!ubyte(input));
 		case 0x39: // Negative integer -1-n (two-byte uint16_t for n follows)
-			return CborValue(-1 - cast(long)readInteger!ushort(input));
-		case 0x3a: // Negative integer -1-n (four-byte uint_t for n follows)
-			return CborValue(-1 - cast(long)readInteger!uint(input));
+			return CborToken(CborTokenType.neginteger, -1 - cast(long)readInteger!ushort(input));
+		case 0x3a: // Negative integer -1-n (four-byte uint32_t for n follows)
+			return CborToken(CborTokenType.neginteger, -1 - cast(long)readInteger!uint(input));
 		case 0x3b: // Negative integer -1-n (eight-byte uint64_t for n follows)
-			return CborValue(-1 - cast(long)readInteger!ulong(input));
+			return CborToken(CborTokenType.neginteger, -1 - cast(long)readInteger!ulong(input));
 		case 0x40: .. case 0x57: // byte string (0x00..0x17 bytes follow)
-			return CborValue(readBytes(input, item - 0x40));
+			return CborToken(CborTokenType.bytesHeader, item - 0x40);
 		case 0x58: // byte string (one-byte uint8_t for n, and then n bytes follow)
-			return CborValue(readBytes(input, readInteger!ubyte(input)));
+			return CborToken(CborTokenType.bytesHeader, readInteger!ubyte(input));
 		case 0x59: // byte string (two-byte uint16_t for n, and then n bytes follow)
-			return CborValue(readBytes(input, readInteger!ushort(input)));
+			return CborToken(CborTokenType.bytesHeader, readInteger!ushort(input));
 		case 0x5a: // byte string (four-byte uint_t for n, and then n bytes follow)
-			return CborValue(readBytes(input, readInteger!uint(input)));
+			return CborToken(CborTokenType.bytesHeader, readInteger!uint(input));
 		case 0x5b: // byte string (eight-byte uint64_t for n, and then n bytes follow)
-			return CborValue(readBytes(input, readInteger!ulong(input)));
-		case 0x5f: // byte string, byte strings follow, terminated by "break"
-			onUnsupportedTag(item); break;
+			return CborToken(CborTokenType.bytesHeader, readInteger!ulong(input));
+		case 0x5f: // indefinite-length byte string, byte strings follow, terminated by "break"
+			return CborToken(CborTokenType.bytesIndefiniteHeader);
 		case 0x60: .. case 0x77: // UTF-8 string (0x00..0x17 bytes follow)
-			return CborValue(cast(string)readBytes(input, item - 0x60));
+			return CborToken(CborTokenType.textHeader, item - 0x60);
 		case 0x78: // UTF-8 string (one-byte uint8_t for n, and then n bytes follow)
-			return CborValue(cast(string)readBytes(input, readInteger!ubyte(input)));
+			return CborToken(CborTokenType.textHeader, readInteger!ubyte(input));
 		case 0x79: // UTF-8 string (two-byte uint16_t for n, and then n bytes follow)
-			return CborValue(cast(string)readBytes(input, readInteger!ushort(input)));
+			return CborToken(CborTokenType.textHeader, readInteger!ushort(input));
 		case 0x7a: // UTF-8 string (four-byte uint_t for n, and then n bytes follow)
-			return CborValue(cast(string)readBytes(input, readInteger!uint(input)));
+			return CborToken(CborTokenType.textHeader, readInteger!uint(input));
 		case 0x7b: // UTF-8 string (eight-byte uint64_t for n, and then n bytes follow)
-			return CborValue(cast(string)readBytes(input, readInteger!ulong(input)));
-		case 0x7f: // UTF-8 string, UTF-8 strings follow, terminated by "break"
-			onUnsupportedTag(item); break;
+			return CborToken(CborTokenType.textHeader, readInteger!ulong(input));
+		case 0x7f: // indefinite-length UTF-8 string, UTF-8 strings follow, terminated by "break"
+			return CborToken(CborTokenType.textIndefiniteHeader);
 		case 0x80: .. case 0x97: // array (0x00..0x17 data items follow)
-			return CborValue(readArray(input, item - 0x80));
+			return CborToken(CborTokenType.arrayHeader, item - 0x80);
 		case 0x98: // array (one-byte uint8_t for n, and then n data items follow)
-			return CborValue(readArray(input, readInteger!ubyte(input)));
+			return CborToken(CborTokenType.arrayHeader, readInteger!ubyte(input));
 		case 0x99: // array (two-byte uint16_t for n, and then n data items follow)
-			return CborValue(readArray(input, readInteger!ushort(input)));
+			return CborToken(CborTokenType.arrayHeader, readInteger!ushort(input));
 		case 0x9a: // array (four-byte uint_t for n, and then n data items follow)
-			return CborValue(readArray(input, readInteger!uint(input)));
+			return CborToken(CborTokenType.arrayHeader, readInteger!uint(input));
 		case 0x9b: // array (eight-byte uint64_t for n, and then n data items follow)
-			return CborValue(readArray(input, readInteger!ulong(input)));
-		case 0x9f: // array, data items follow, terminated by "break"
-			onUnsupportedTag(item); break;
+			return CborToken(CborTokenType.arrayHeader, readInteger!ulong(input));
+		case 0x9f: // indefinite-length array, data items follow, terminated by "break"
+			return CborToken(CborTokenType.arrayIndefiniteHeader);
 		case 0xa0: .. case 0xb7: // map (0x00..0x17 pairs of data items follow)
-			return CborValue(readMap(input, item - 0xa0));
+			return CborToken(CborTokenType.mapHeader, item - 0xa0);
 		case 0xb8: // map (one-byte uint8_t for n, and then n pairs of data items follow)   
-			return CborValue(readMap(input, readInteger!ubyte(input)));
+			return CborToken(CborTokenType.mapHeader, readInteger!ubyte(input));
 		case 0xb9: // map (two-byte uint16_t for n, and then n pairs of data items follow)
-			return CborValue(readMap(input, readInteger!ushort(input)));
+			return CborToken(CborTokenType.mapHeader, readInteger!ushort(input));
 		case 0xba: // map (four-byte uint_t for n, and then n pairs of data items follow)
-			return CborValue(readMap(input, readInteger!uint(input)));
+			return CborToken(CborTokenType.mapHeader, readInteger!uint(input));
 		case 0xbb: // map (eight-byte uint64_t for n, and then n pairs of data items follow)
-			return CborValue(readMap(input, readInteger!ulong(input)));
-		case 0xbf: // map, pairs of data items follow, terminated by "break"
-			onUnsupportedTag(item); break;
-		case 0xc0: .. case 0xd7: // (tagged item) ignore
-			goto start_label;
+			return CborToken(CborTokenType.mapHeader, readInteger!ulong(input));
+		case 0xbf: // indefinite-length map, pairs of data items follow, terminated by "break"
+			return CborToken(CborTokenType.mapIndefiniteHeader);
+		case 0xc0: .. case 0xd7: // (tagged item)
+			return CborToken(CborTokenType.tag, item - 0xc0);
 		case 0xd8: // ignore 1-byte tag
-			dropBytes(input, 1);
-			goto start_label;
+			return CborToken(CborTokenType.tag, readInteger!ubyte(input));
 		case 0xd9: // ignore 2-byte tag
-			dropBytes(input, 2);
-			goto start_label;
+			return CborToken(CborTokenType.tag, readInteger!ushort(input));
 		case 0xda: // ignore 4-byte tag
-			dropBytes(input, 4);
-			goto start_label;
+			return CborToken(CborTokenType.tag, readInteger!uint(input));
 		case 0xdb: // ignore 8-byte tag
-			dropBytes(input, 8);
-			goto start_label;
+			return CborToken(CborTokenType.tag, readInteger!ulong(input));
 		case 0xe0: .. case 0xf3: // (simple value)
-			onUnsupportedTag(item); break;
+			return CborToken(CborTokenType.simple, item - 0xe0);
 		case 0xf4: // False
-			return CborValue(false);
+			return CborToken(CborTokenType.boolean, false);
 		case 0xf5: // True
-			return CborValue(true);
+			return CborToken(CborTokenType.boolean, true);
 		case 0xf6: // Null
-			return CborValue(null);
+			return CborToken(CborTokenType.nil);
 		case 0xf7: // Undefined
-			return CborValue(CborValue.Type.undefined);
+			return CborToken(CborTokenType.undefined);
 		case 0xf8: // (simple value, one byte follows)
-			onUnsupportedTag(item); break;
+			return CborToken(CborTokenType.simple, readInteger!ubyte(input));
 		case 0xf9: // Half-Precision Float (two-byte IEEE 754)
 			__HalfRep hr = {u : readInteger!ushort(input)};
-			return CborValue(hr.h.get!double);
+			return CborToken(CborTokenType.floating, hr.h.get!double);
 		case 0xfa: // Single-Precision Float (four-byte IEEE 754)
 			__FloatRep fr = {u : readInteger!uint(input)};
-			return CborValue(fr.f);
+			return CborToken(CborTokenType.floating, fr.f);
 		case 0xfb: // Double-Precision Float (eight-byte IEEE 754)
 			__DoubleRep dr = {u : readInteger!ulong(input)};
-			return CborValue(dr.d);
+			return CborToken(CborTokenType.floating, dr.d);
 		case 0xff: // "break" stop code
-			onUnsupportedTag(item); break;
+			return CborToken(CborTokenType.breakCode);
 		default:
 			onUnsupportedTag(item);
 	}
@@ -1064,30 +677,424 @@ CborValue decodeCbor(R)(auto ref R input)
 	assert(false);
 }
 
-/// Decodes single cbor value and tries to convert it to requested type.
-/// If types doesn't match CborException is thrown.
-/// Note, that ubyte[] and string types are slices of input range if ubyte[] was provided.
-/// Will modify input range, popping all the elements of T.
-T decodeCborSingle(T, Flag!"Flatten" flatten = No.Flatten, R)(auto ref R input)
-	if(isInputRange!R && is(ElementType!R == ubyte))
+//------------------------------------------------------------------------------
+//	DDDDD   EEEEEEE  SSSSS  EEEEEEE RRRRRR  IIIII   AAA   LL      IIIII ZZZZZ EEEEEEE 
+//	DD  DD  EE      SS      EE      RR   RR  III   AAAAA  LL       III     ZZ EE      
+//	DD   DD EEEEE    SSSSS  EEEEE   RRRRRR   III  AA   AA LL       III    ZZ  EEEEE   
+//	DD   DD EE           SS EE      RR  RR   III  AAAAAAA LL       III   ZZ   EE      
+//	DDDDDD  EEEEEEE  SSSSS  EEEEEEE RR   RR IIIII AA   AA LLLLLLL IIIII ZZZZZ EEEEEEE 
+//	                                                                                  
+//------------------------------------------------------------------------------
+
+// If duplicate is true then dups incoming byte arrays and utf-8 string.
+// If duplicate is false and input is array, then resulting byte arrays (ubyte[]) and
+// utf-8 strings (char[], string) are slices of the input range.
+void decodeCbor(
+	Flag!"Duplicate" duplicate = Yes.Duplicate,
+	Flag!"Flatten" flatten = No.Flatten,
+	R,
+	T)
+	(auto ref R input, ref T outValue)
+		if(isInputRange!R && is(ElementType!R == ubyte))
 {
-	CborValue value = decodeCbor(input);
-	return value.as!T;
+	import std.typecons : isTuple;
+	CborToken token;
+
+	static if (isIntegral!T) {
+		token = decodeCborToken(input);
+		if (token.type == CborTokenType.neginteger) {
+			outValue = cast(T)token.integer;
+			return;
+		} else if (token.type == CborTokenType.posinteger) {
+			outValue = cast(T)token.uinteger;
+			return;
+		}
+	} else static if (isSomeChar!T) {
+		token = decodeCborToken(input);
+		if (token.type == CborTokenType.posinteger) {
+			outValue = cast(T)token.uinteger;
+			return;
+		}
+	} else static if (isFloatingPoint!T) {
+		token = decodeCborToken(input);
+		if (token.type == CborTokenType.floating) {
+			outValue = cast(T)token.floating;
+			return;
+		}
+	} else static if (isBoolean!T) {
+		token = decodeCborToken(input);
+		if (token.type == CborTokenType.boolean) {
+			outValue = token.boolean;
+			return;
+		}
+	} else static if ((isArray!T || isOutputRange!(T, ubyte)) && is(Unqual!(ElementType!T) == ubyte)) {
+		decodeCborExactByteArray!(duplicate, flatten)(input, outValue);
+		return;
+	} else static if (isArray!T && isSomeChar!(Unqual!(ElementEncodingType!T))) {
+		decodeString!(duplicate, flatten)(input, outValue);
+		return;
+	} else static if (isArray!T) {
+		decodeSequence!(duplicate, flatten)(input, outValue);
+		return;
+	} else static if (is(T == class) || is(T == struct) || isTuple!T) {
+		decodeAggregate!(duplicate, flatten)(input, outValue);
+		return;
+	} else static if (isAssociativeArray!T) {
+		token = decodeCborToken(input);
+
+		if (token.type == CborTokenType.nil) {
+			outValue = null;
+			return;
+		}
+
+		T map;
+		alias K = typeof(T.init.keys[0]);
+		alias V = typeof(T.init.values[0]);
+
+		if (token.type == CborTokenType.mapHeader) {
+			foreach (_; 0..token.uinteger) {
+				K key;
+				V value;
+				decodeCbor!(duplicate, flatten)(input, key);
+				decodeCbor!(duplicate, flatten)(input, value);
+				map[key] = value;
+			}
+		} else if (token.type == CborTokenType.mapIndefiniteHeader) {
+			while (true) {
+				token = decodeCborToken(input.save);
+				if (token.type == CborTokenType.breakCode) {
+					break;
+				} else {
+					K key;
+					V value;
+					decodeCbor!(duplicate, flatten)(input, key);
+					decodeCbor!(duplicate, flatten)(input, value);
+					map[key] = value;
+				}
+			}
+		}
+		outValue = map;
+		return;
+	} else {
+		static assert(false, "Unable to decode " ~ T.stringof);
+	}
+
+	onCastErrorToFrom!T(token.type);
+	assert(false);
+}
+
+private void decodeString(
+	Flag!"Duplicate" duplicate = Yes.Duplicate,
+	Flag!"Flatten" flatten = No.Flatten,
+	R,
+	T)
+	(auto ref R input, ref T outValue)
+		if(isInputRange!R && is(ElementType!R == ubyte))
+{
+	enum bool flat = needsFlattening!(T, flatten);
+	static if (flat) {
+		static assert(isStaticArray!T, "Only static arrays can be flat");
+		ubyte[] bytes = readBytes(input, T.length);
+		readStaticString(bytes, outValue);
+		return;
+	}
+
+	CborToken token = decodeCborToken(input);
+	bool definite = !(token.type & 0b001);
+
+	if (definite) {
+		static if (isDynamicArray!T)
+		{
+			ubyte[] bytes = readBytes(input, cast(size_t)token.uinteger);
+			outValue = to!T(cast(char[])bytes);
+			static if (is(Unqual!(ElementEncodingType!T) == ubyte) && duplicate)
+				outValue = outValue.dup; // TODO allocation
+			return;
+		}
+		else static if (isStaticArray!T)
+		{
+			ubyte[] bytes = readBytes(input, cast(size_t)token.uinteger);
+			if (bytes.length != T.length) onCastErrorToFrom!T(token.type);
+			readStaticString(bytes, outValue);
+			return;
+		}
+	}
+	else
+	{
+		static if (isDynamicArray!T)
+		{
+			alias Unqualified = Unqual!(ElementEncodingType!T)[];
+			Unqualified output;
+			size_t i;
+
+			while (true) {
+				token = decodeCborToken(input.save);
+				if (token.type == CborTokenType.breakCode) {
+					import std.range : dropExactly;
+					dropExactly(input, 1);
+					break;
+				} else {
+					decodeCborToken(input);
+					if (token.type != CborTokenType.textHeader)
+						throw new CborException(format("Expected textHeader but got %s", token.type));
+					output.length += cast(size_t)token.uinteger - (output.length - i); // TODO allocation
+					ubyte[] innerBytes = readBytes(input, token.uinteger);
+					i += readStaticString(innerBytes, output[i..$]);
+				}
+			}
+			output.length = i;
+			outValue = cast(T)output;
+			return;
+		}
+		else static if (isStaticArray!T)
+			assert(false, "TODO");
+	}
+	assert(false, "TODO");
+}
+
+private size_t readStaticString(T)(ubyte[] bytes, auto ref T outValue)
+{
+	static if (is(Unqual!(ElementEncodingType!T) == char))
+	{
+		outValue[] = cast(ElementEncodingType!T[])(bytes[]);
+		return bytes.length;
+	}
+	else
+	{
+		import std.utf : byUTF;
+		alias V = Unqual!(ElementEncodingType!T);
+		size_t i;
+		foreach(c; byUTF!V(cast(char[])bytes)) {
+			outValue[i] = c;
+			++i;
+		}
+		return i;
+	}
+}
+
+private void decodeSequence(
+	Flag!"Duplicate" duplicate = Yes.Duplicate,
+	Flag!"Flatten" flatten = No.Flatten,
+	R,
+	T)
+	(auto ref R input, ref T outValue)
+		if(isInputRange!R && is(ElementType!R == ubyte))
+{
+	enum bool flat = needsFlattening!(T, flatten);
+	enum bool dynamicArray = isDynamicArray!T;
+	enum bool staticArray = isStaticArray!T;
+	enum bool range = !(staticArray || dynamicArray);
+
+	//------------------------------------------------------------------------------
+	// Flat. Without header. Read only elements.
+	static if (flat)
+	{
+		static assert(isStaticArray!T, "Only static arrays can be flat");
+		foreach (ref elem; outValue)
+			decodeCbor!(duplicate, flatten)(input, elem);
+		return;
+	}
+
+	//------------------------------------------------------------------------------
+	// non-flat. Read header.
+	CborToken token = decodeCborToken(input);
+	bool definite = !(token.type & 0b001);
+
+	if (definite) {
+		static if (dynamicArray)
+		{
+			ulong lengthToRead = token.uinteger;
+			checkArraySize(lengthToRead);
+			if (outValue.length != cast(size_t)lengthToRead)
+				outValue.length = cast(size_t)token.uinteger;
+			foreach (ref elem; outValue)
+				decodeCbor!(duplicate, flatten)(input, elem);
+			return;
+		}
+		else static if (staticArray)
+		{
+			foreach (ref elem; outValue)
+				decodeCbor!(duplicate, flatten)(input, elem);
+			return;
+		}
+	}
+	else // indefinite
+	{
+		static if (dynamicArray)
+		{
+			alias Unqualified = Unqual!(ElementEncodingType!T)[];
+			Unqualified output;
+			output.length = 1;
+			size_t i;
+
+			while (true) {
+				token = decodeCborToken(input.save);
+				if (token.type == CborTokenType.breakCode) {
+					import std.range : dropExactly;
+					dropExactly(input, 1);
+					break;
+				} else {
+					if (output.length == i)
+						output.length = output.length * 2; // TODO allocation
+					decodeCbor!(No.Duplicate, flatten)(input, output[i]);
+				}
+				++i;
+			}
+			output.length = i;
+			outValue = cast(T)output;
+			return;
+		}
+		else static if (staticArray)
+			assert(false, "TODO");
+	}
+	assert(false, "TODO");
+}
+
+private void decodeCborExactByteArray(
+	Flag!"Duplicate" duplicate = Yes.Duplicate,
+	Flag!"Flatten" flatten = No.Flatten,
+	R,
+	T)
+	(auto ref R input, ref T outValue)
+		if(isInputRange!R && is(ElementType!R == ubyte))
+{
+	static if (needsFlattening!(T, flatten))
+	{
+		outValue[] = cast(ElementEncodingType!T[])(readBytes(input, T.length));
+		return;
+	}
+	else
+	{
+		CborToken token = decodeCborToken(input);
+		if (token.type == CborTokenType.bytesHeader)
+		{
+			ubyte[] data = readBytes(input, token.uinteger);
+			static if (isDynamicArray!T) {
+				outValue = cast(T)data;
+				static if (duplicate)
+					outValue = outValue.dup;
+			} else static if (isStaticArray!T) {
+				if (data.length != T.length)
+					onCastErrorToFrom!T(token.type);
+				outValue[] = data;
+			} else {
+				static assert(false);
+			}
+			return;
+		}
+		else if (token.type == CborTokenType.bytesIndefiniteHeader)
+		{
+			import std.algorithm : copy;
+			import std.array : Appender, appender;
+
+			static if (isArray!T) {
+				alias unqualified = Unqual!(ElementEncodingType!T)[];
+				Appender!(unqualified) sink = appender(cast(unqualified)outValue);
+				sink.clear();
+			} else
+				alias sink = outValue;
+
+			while (true) {
+				token = decodeCborToken(input);
+				if (token.type == CborTokenType.breakCode) {
+					break;
+				} else if (token.type == CborTokenType.bytesHeader) {
+					copy(readBytes(input, token.uinteger), sink);
+				} else {
+					throw new CborException(
+						format("Unexpected token inside indefinite-length byte array: %s; "~
+							"Expected definite-length byteString", token));
+				}
+			}
+
+			static if (isDynamicArray!T) {
+				outValue = cast(T)sink.data;
+			} else static if (isStaticArray!T) {
+				outValue[] = sink.data;
+			} else
+				static assert(false);
+
+			return;
+		}
+	}
+}
+
+private void decodeAggregate(
+	Flag!"Duplicate" duplicate = Yes.Duplicate,
+	Flag!"Flatten" flatten = No.Flatten, R, T)
+	(auto ref R input, ref T outValue)
+		if(isInputRange!R && is(ElementType!R == ubyte))
+{
+	CborToken token = decodeCborToken(input);
+
+	static if (is(T == class))
+	if (token.type == CborTokenType.nil) {
+		outValue = null;
+		return;
+	}
+
+	static if (!needsFlattening!(T, flatten))
+	{
+		if (token.type != CborTokenType.arrayHeader)
+			throw new CborException(format("Can not decode %s from %s", T.stringof, token.type));
+
+		size_t numMembers;
+
+		static if (isTuple!T)
+			numMembers = T.Types.length;
+		else
+			numMembers = numEncodableMembers!T;
+
+		if (token.uinteger != numMembers)
+		{
+			throw new CborException(
+				format("The number of deserialized members of %s is mismatched."~
+					" Got %s, while expected %s members",
+						T.stringof, token.uinteger, numMembers));
+		}
+	}
+
+	static if (isTuple!T)
+	{
+		foreach (i, Type; T.Types)
+			decodeCbor!(duplicate, flatten)(input, outValue.field[i]);
+	}
+	else 
+	{
+		static if (is(T == class))
+		if (outValue is null)
+			outValue = newClassInstance!T();
+
+		foreach(i, ref member; outValue.tupleof)
+		{
+			static if (isEncodedField!(typeof(member)))
+				decodeCbor!(duplicate, flatten)(input, outValue.tupleof[i]);
+		}
+	}
 }
 
 /// Decodes single cbor value and tries to convert it to requested type.
-/// If types doesn't match CborException is thrown.
-/// Note, that this version will dup all arrays for you.
-/// Will modify input range, popping all the elements of T.
+/// If types don't match CborException is thrown.
+/// Note, that ubyte[] and string types are slices of input range if ubyte[] was provided.
+/// Will consume input range, decoding all the elements of T.
+T decodeCborSingle(T, Flag!"Flatten" flatten = No.Flatten, R)(auto ref R input)
+	if(isInputRange!R && is(ElementType!R == ubyte))
+{
+	Unqual!T value;
+	decodeCbor!(No.Duplicate, flatten)(input, value);
+	return cast(T)value;
+}
+
+/// Decodes single cbor value and tries to convert it to requested type.
+/// If types don't match CborException is thrown.
+/// Note, that this version will dup all array slices for you.
+/// Will consume input range, decoding all the elements of T.
 T decodeCborSingleDup(T, Flag!"Flatten" flatten = No.Flatten, R)(auto ref R input)
 	if(isInputRange!R && is(ElementType!R == ubyte))
 {
-	CborValue value = decodeCbor(input);
-
-	static if (is(T == E[], E))
-		return value.as!T.dup;
-	else
-		return value.as!T;
+	Unqual!T value;
+	decodeCbor!(Yes.Duplicate, flatten)(input, value);
+	return cast(T)value;
 }
 
 //------------------------------------------------------------------------------
@@ -1098,18 +1105,7 @@ T decodeCborSingleDup(T, Flag!"Flatten" flatten = No.Flatten, R)(auto ref R inpu
 //		HH   HH EEEEEEE LLLLLLL PP      EEEEEEE RR   RR  SSSSS  
 //------------------------------------------------------------------------------
 
-/// Tests if type can be encoded in flat mode, i.e. without header
-template canBeFlattened(T)
-{
-	enum bool canBeFlattened =
-		isStaticArray!T ||
-		(isTuple!T && isExpressionTuple!T) ||
-		is(T == struct);
-}
-
-enum bool needsFlattening(T, Flag!"Flatten" flatten) = canBeFlattened!T && flatten;
-
-private void putChecked(R, E)(ref R sink, auto ref E e)
+private void putChecked(R, E)(ref R sink, const auto ref E e)
 {
 	import std.range : put, hasLength;
 	version(Cbor_Debug)
@@ -1153,20 +1149,10 @@ private T readN(ubyte size, T, R)(auto ref R input)
 	return result;
 }
 
-// Drops exactly length bytes from input range.
-// If there is not sufficient bytes in input, CborException is thrown.
-private void dropBytes(R)(auto ref R input, ulong length)
-	if(isInputRange!R && is(ElementType!R == ubyte))
-{
-	import std.range : dropExactly;
-	if (input.length < length) onInsufficientInput();
-	input = input.dropExactly(cast(size_t)length);
-}
-
 // Reads byte array from input range. On 32-bit can read up to uint.max bytes.
 // If ubyte[] is passed as input, a slice will be returned.
 // Make sure to dup array when input buffer is reused.
-private ubyte[] readBytes(R)(auto ref R input, ulong length)
+ubyte[] readBytes(R)(auto ref R input, ulong length)
 	if(isInputRange!R && is(ElementType!R == ubyte))
 {
 	import std.array;
@@ -1193,48 +1179,107 @@ private ubyte[] readBytes(R)(auto ref R input, ulong length)
 }
 
 // Read array of 'length' items into CborValue[].
-private CborValue[] readArray(R)(auto ref R input, ulong length)
+private T[] readTypedArray(T, R)(auto ref R input, ulong length)
 	if(isInputRange!R && is(ElementType!R == ubyte))
 {
-	static if (size_t.sizeof < ulong.sizeof)
-		if (length > size_t.max)
-			throw new CborException(format("Array size is too big %s", length));
-
 	import std.array : uninitializedArray;
 	size_t arrayLength = cast(size_t)length;
-	CborValue[] result = uninitializedArray!(CborValue[])(arrayLength);
+	T[] result = uninitializedArray!(T[])(arrayLength);
 	foreach(ref elem; result)
 	{
-		elem = decodeCbor(input);
+		decodeCbor(input, elem);
 	}
 
 	return result;
 }
 
-// length - num of pairs
-private CborValue[CborValue] readMap(R)(auto ref R input, ulong length)
-	if(isInputRange!R && is(ElementType!R == ubyte))
+private void checkArraySize(T)(T length)
 {
 	static if (size_t.sizeof < ulong.sizeof)
 		if (length > size_t.max)
-			throw new CborException(format("Map size is too big: %s", length));
-
-	size_t mapLength = cast(size_t)length;
-	CborValue[CborValue] result;
-	foreach(i; 0..mapLength)
-	{
-		auto key = decodeCbor(input);
-		if (key in result) throw new CborException(format("duplicate key %s in map found", key));
-		result[key] = decodeCbor(input);
-	}
-
-	return result;
+			throw new CborException(format("Array size is too big: %s > size_t.max", length));
 }
 
 private import std.numeric : CustomFloat;
 private union __HalfRep { CustomFloat!16 h; ushort u; string toString(){return format("__HalfRep(%s, %x)", h, u);};}
 private union __FloatRep { float f; uint u; string toString(){return format("__FloatRep(%s, %x)", f, u);};}
 private union __DoubleRep { double d; ulong u; string toString(){return format("__DoubleRep(%s, %x)", d, u);};}
+
+/// Outputs textual representation of cbor stream into sink or stdout if not provided.
+void printCborStream(string singleIndent="  ", R)(auto ref R input)
+{
+	import std.stdio : stdout;
+	auto writer = stdout.lockingTextWriter;
+	printCborStream!singleIndent(input, writer);
+}
+
+/// ditto
+void printCborStream(string singleIndent="  ", Sink, R)(
+		auto ref R input,
+		auto ref Sink sink,
+		ulong numItems = ulong.max,
+		string indent = null
+	)
+	if(isInputRange!R && is(ElementType!R == ubyte) && isOutputRange!(Sink, char))
+{
+	import std.format : formattedWrite;
+
+	while(input.length > 0 && numItems > 0)
+	{
+		CborToken token = decodeCborToken(input);
+		auto type = token.type;
+		final switch(type) with(CborTokenType)
+		{
+			case boolean: formattedWrite(sink, "%s(%s)\n", indent, token.boolean); break;
+			case nil: formattedWrite(sink, "%s(null)\n", indent); break;
+			case undefined: formattedWrite(sink, "%s(undefined)\n", indent); break;
+			case tag:
+				formattedWrite(sink, "%s(tag, %s)\n", indent, token.uinteger);
+				printCborStream!singleIndent(input, sink, 1, indent~singleIndent);
+				break;
+			case simple: formattedWrite(sink, "%s(simple, %s)\n", indent, token.uinteger); break;
+			case breakCode:
+				formattedWrite(sink, "%s(break)\n", indent, token.uinteger);
+				return;
+			case posinteger: formattedWrite(sink, "%s(posinteger, %s)\n", indent, token.uinteger); break;
+			case neginteger: formattedWrite(sink, "%s(neginteger, %s)\n", indent, token.integer); break;
+			case floating: formattedWrite(sink, "%s(floating, %s)\n", indent, token.floating); break;
+			case arrayHeader:
+				formattedWrite(sink, "%s(array, %s)\n", indent, token.uinteger);
+				printCborStream!singleIndent(input, sink, token.uinteger, indent~singleIndent);
+				break;
+			case arrayIndefiniteHeader:
+				formattedWrite(sink, "%s(array, _)\n", indent);
+				printCborStream!singleIndent(input, sink, ulong.max, indent~singleIndent);
+				break;
+			case mapHeader:
+				formattedWrite(sink, "%s(map, %s)\n", indent, token.uinteger);
+				printCborStream!singleIndent(input, sink, token.uinteger, indent~singleIndent);
+				break;
+			case mapIndefiniteHeader:
+				formattedWrite(sink, "%s(map, _)\n", indent);
+				printCborStream!singleIndent(input, sink, ulong.max, indent~singleIndent);
+				break;
+			case bytesHeader:
+				formattedWrite(sink, "%s(bytes, %s)\n%s%s(%(%02x%))\n",
+					indent, token.uinteger, indent, singleIndent, readBytes(input, token.uinteger));
+				break;
+			case bytesIndefiniteHeader:
+				formattedWrite(sink, "%s(bytes, _)\n", indent);
+				printCborStream!singleIndent(input, sink, ulong.max, indent~singleIndent);
+				break;
+			case textHeader:
+				formattedWrite(sink, "%s(text, %s)\n%s%s\"%s\"\n",
+					indent, token.uinteger, indent, singleIndent, cast(string)readBytes(input, token.uinteger));
+				break;
+			case textIndefiniteHeader:
+				formattedWrite(sink, "%s(text, _)\n", indent);
+				printCborStream!singleIndent(input, sink, ulong.max, indent~singleIndent);
+				break;
+		}
+		--numItems;
+	}
+}
 
 private template isEncodedField(T)
 {
@@ -1243,6 +1288,17 @@ private template isEncodedField(T)
 		isTuple!T || is(T == string) || is(T == class) || is(T == struct) ||
 		isAssociativeArray!T;
 }
+
+/// Tests if type can be encoded in flat mode, i.e. without header
+private template canBeFlattened(T)
+{
+	enum bool canBeFlattened =
+		isStaticArray!T ||
+		(isTuple!T && isExpressionTuple!T) ||
+		is(T == struct);
+}
+
+private enum bool needsFlattening(T, Flag!"Flatten" flatten) = canBeFlattened!T && flatten;
 
 /// Returns a number of aggregate members that will be encoded by cbor-d.
 template numEncodableMembers(alias T)
@@ -1260,6 +1316,14 @@ private template numEncodableMembersImpl(members ...)
 			numEncodableMembersImpl!(members[1..$]);
 }
 
+private C newClassInstance(C)() if (is(C == class))
+{
+	import core.memory : GC;
+	void* memory = GC.malloc(typeid(C).init.length);
+	memory[0 .. typeid(C).init.length] = typeid(C).init[];
+	return cast(C) memory;
+}
+
 //------------------------------------------------------------------------------
 //		TTTTTTT EEEEEEE  SSSSS  TTTTTTT  SSSSS  
 //		  TTT   EE      SS        TTT   SS      
@@ -1267,111 +1331,54 @@ private template numEncodableMembersImpl(members ...)
 //		  TTT   EE           SS   TTT        SS 
 //		  TTT   EEEEEEE  SSSSS    TTT    SSSSS  
 //------------------------------------------------------------------------------
-                                      
-
-unittest // positive integer
-{
-	CborValue val = CborValue(22);
-	assert(val == 22);
-	assert(val.as!ubyte == 22);
-	assert(val.as!ushort == 22);
-	assert(val.as!uint == 22);
-	assert(val.as!ulong == 22);
-	assert(val.as!byte == 22);
-	assert(val.as!short == 22);
-	assert(val.as!int == 22);
-	assert(val.as!long == 22);
-	assert(val.type == CborValue.Type.posinteger);
-
-	val = CborValue(ulong.max);
-	assert(val == ulong.max);
-	assert(val.type == CborValue.Type.posinteger);
-}
-
-unittest // negative integer
-{
-	CborValue val = CborValue(-22);
-	assert(val == -22);
-	assert(val !=  22);
-	assert(val.as!byte == -22);
-	assert(val.as!short == -22);
-	assert(val.as!int == -22);
-	assert(val.as!long == -22);
-	assert(val.as!ulong == cast(ulong)-22);
-	assert(val.type == CborValue.Type.neginteger);
-}
-
-unittest // floating point
-{
-	CborValue val = CborValue(-22.0f);
-	assert(val == -22f);
-	assert(val.as!real == -22f);
-	assert(val.as!double == -22f);
-	assert(val.as!float == -22f);
-	assert(val.type == CborValue.Type.floating);
-}
-
-unittest // boolean
-{
-	CborValue val = CborValue(true);
-	assert(val == true);
-	assert(val.as!bool == true);
-	assert(val.type == CborValue.Type.boolean);
-
-	val = CborValue(false);
-	assert(val == false);
-	assert(val.as!bool == false);
-	assert(val.type == CborValue.Type.boolean);
-}
-
-unittest // undefined
-{
-	CborValue val = CborValue(CborValue.Type.undefined);
-	assert(val == CborValue(CborValue.Type.undefined));
-	assert(val.type == CborValue.Type.undefined);
-}
-
-unittest // null value
-{
-	CborValue val = CborValue(null);
-	assert(val == CborValue(null)); // prefer
-	assert(val.as!(ubyte[]) == null);
-	assert(val.as!(ubyte[3]) == [0,0,0]);
-	assert(val == CborValue(CborValue.Type.nil));
-	assert(val.type == CborValue.Type.nil);
-}
-
-unittest // array
-{
-	CborValue val = CborValue([CborValue(1), CborValue("string"), CborValue(true), CborValue(null)]);
-	assert(val == [CborValue(1), CborValue("string"), CborValue(true), CborValue(null)]);
-	assert(val.type == CborValue.Type.array);
-}
-
-unittest // map
-{
-	CborValue val = CborValue([CborValue("a") : CborValue(42)]);
-	assert(val == [CborValue("a") : CborValue(42)]);
-	assert(val.type == CborValue.Type.map);
-}
-
-unittest // byte string
-{
-	CborValue val = CborValue(cast(ubyte[])[1, 2, 3, 4, 5]);
-	assert(val == cast(ubyte[])[1, 2, 3, 4, 5]);
-	assert(val.type == CborValue.Type.raw);
-}
-
-unittest // string
-{
-	CborValue val = CborValue("hello");
-	assert(val == "hello");
-	assert(val.type == CborValue.Type.text);
-}
 
 // Testing helpers
 version(unittest)
 {
+	import std.array : Appender;
+	import std.stdio;
+	Appender!(ubyte[]) testBuf;
+
+	CborToken getTokenAndReset()
+	{
+		CborToken res = decodeCborToken(testBuf.data);
+		testBuf.clear();
+		return res;
+	}
+
+	void assertToken(CborToken expected)
+	{
+		CborToken decoded = getTokenAndReset();
+		ubyte[] decodedRep = (cast(ubyte*)(&decoded))[0..decoded.sizeof];
+		ubyte[] expectedRep = (cast(ubyte*)(&expected))[0..expected.sizeof];
+		//writefln("%s %s", decodedRep, expectedRep);
+		assert(decoded == expected, format("decoded %s, %s, expected %s, %s",
+				decoded, decodedRep, expected, expectedRep));
+	}
+
+	void assertHexAndClear(string file = __MODULE__, size_t line = __LINE__)(string hex)
+	{
+		assertEqual!(file, line)(toHexString(testBuf.data), hex);
+		testBuf.clear();
+	}
+
+	void printBufferAndReset()
+	{
+		import std.stdio : stdout;
+		printCborStream(testBuf.data);
+		testBuf.clear();
+	}
+
+	void assertEqual(string file = __MODULE__, size_t line = __LINE__, A, B)(A a, B b)
+	{
+		assert(a == b, format("%s(%s) != %s(%s) at %s:%s", typeid(a), a, typeid(b), b, file, line));
+	}
+
+	void assertf(Args...)(bool condition, string formatStr, Args args)
+	{
+		assert(condition, format(formatStr, args));
+	}
+
 	private ubyte[1024] buf;
 
 	private ubyte[] getEncoded(T)(T value)
@@ -1407,6 +1414,61 @@ version(unittest)
 		auto encoded = encodedString(cast(immutable)value);
 		assert(encoded == encodedStr, format("%s != %s", encoded, encodedStr));
 	}
+}
+// Basic encoding/decoding
+unittest
+{
+	// positive integer
+	encodeCborInt(testBuf, 1);
+	assertToken(CborToken(CborTokenType.posinteger, 1));
+	// negative integer
+	encodeCborInt(testBuf, -10);
+	assertToken(CborToken(CborTokenType.neginteger, -10));
+	// bool true
+	encodeCborBool(testBuf, true);
+	assertToken(CborToken(CborTokenType.boolean, true));
+	// bool false
+	encodeCborBool(testBuf, false);
+	assertToken(CborToken(CborTokenType.boolean, false));
+	// null
+	encodeCborNull(testBuf);
+	assertToken(CborToken(CborTokenType.nil));
+	// undefined
+	encodeCborUndefined(testBuf);
+	assertToken(CborToken(CborTokenType.undefined));
+	// break
+	encodeCborBreak(testBuf);
+	assertToken(CborToken(CborTokenType.breakCode));
+	// simple
+	encodeCborSimple(testBuf, 10);
+	assertToken(CborToken(CborTokenType.simple, 10));
+	// bytes
+	encodeCborBytesHeader(testBuf, 10);
+	assertToken(CborToken(CborTokenType.bytesHeader, 10));
+	// bytes
+	encodeCborBytesHeader(testBuf);
+	assertToken(CborToken(CborTokenType.bytesIndefiniteHeader));
+	// text
+	encodeCborStringHeader(testBuf, 10);
+	assertToken(CborToken(CborTokenType.textHeader, 10));
+	// text
+	encodeCborStringHeader(testBuf);
+	assertToken(CborToken(CborTokenType.textIndefiniteHeader));
+	// array
+	encodeCborArrayHeader(testBuf, 10);
+	assertToken(CborToken(CborTokenType.arrayHeader, 10));
+	// array
+	encodeCborArrayHeader(testBuf);
+	assertToken(CborToken(CborTokenType.arrayIndefiniteHeader));
+	// map
+	encodeCborMapHeader(testBuf, 10);
+	assertToken(CborToken(CborTokenType.mapHeader, 10));
+	// map
+	encodeCborMapHeader(testBuf);
+	assertToken(CborToken(CborTokenType.mapIndefiniteHeader));
+	// tag
+	encodeCborTag(testBuf, 1);
+	assertToken(CborToken(CborTokenType.tag, 1));
 }
 
 unittest // encoding
@@ -1491,25 +1553,6 @@ private void testEncoding(alias cmpEncoded)()
 	uint[uint] emptyAA;
 	cmpEncoded(emptyAA, "0xa0");
 	cmpEncoded([1:2], "0xa10102");
-	
-	//cmpEncoded({"a": 1, "b": [2, 3]}, "0xa26161016162820203");
-	//cmpEncoded(["a", {"b": "c"}], "0x826161a161626163");
-	// Impossible to test because with latest dmd order of elements is changed and is not predictable
-	//cmpEncoded(["a": "A", "b": "B", "c":"C", "d": "D", "e": "E"],
-	//	"0xa56161614161626142616361436164614461656145");
-	//cmpEncoded((_ h'0102', h'030405'), "0x5f42010243030405ff");
-	//cmpEncoded((_ "strea", "ming"), "0x7f657374726561646d696e67ff");
-	//cmpEncoded([_ ], "0x9fff");
-	//cmpEncoded([_ 1, [2, 3], [_ 4, 5]], "0x9f018202039f0405ffff");
-	//cmpEncoded([_ 1, [2, 3], [4, 5]], "0x9f01820203820405ff");
-	//cmpEncoded([1, [2, 3], [_ 4, 5]], "0x83018202039f0405ff");
-	//cmpEncoded([1, [_ 2, 3], [4, 5]], "0x83019f0203ff820405");
-	//cmpEncoded([_ 1, 2, 3, 4, 5, 6, 7, 8,	9, 10, 11, 12, 13, 14, 15,
-	//	16, 17, 18, 19, 20, 21, 22, 23, 24, 25],
-	//	"0x9f0102030405060708090a0b0c0d0e0f101112131415161718181819ff");
-	//cmpEncoded({_ "a": 1, "b": [_ 2, 3]}, "0xbf61610161629f0203ffff");
-	//cmpEncoded(["a", {_ "b": "c"}], "0x826161bf61626163ff");
-	//cmpEncoded({_ "Fun": true, "Amt": -2}, "0xbf6346756ef563416d7421ff");
 
 	cmpEncoded(cast(ubyte)42, "0x182a");
 	cmpEncoded(cast(ushort)42, "0x182a");
@@ -1521,151 +1564,235 @@ private void testEncoding(alias cmpEncoded)()
 	cmpEncoded(cast(long)42, "0x182a");
 }
 
-unittest // decoding decodeCbor
+// indefinite-length encoding
+unittest
 {
-	import std.range : only, chain, iota;
-	import std.exception;
-	import std.bitmanip;
-	import std.array;
-	import std.algorithm : equal;
+	// {"a": 1, "b": [2, 3]}
+	encodeCborMapHeader(testBuf, 2);
+		encodeCborString(testBuf, "a");
+		encodeCborInt(testBuf, 1);
+		encodeCborString(testBuf, "b");
+		encodeCborArrayHeader(testBuf, 2);
+			encodeCborInt(testBuf, 2);
+			encodeCborInt(testBuf, 3);
+	assertHexAndClear("0xa26161016162820203");
 
-	alias ntob = nativeToBigEndian;
-	alias bton = bigEndianToNative;
+	// ["a", {"b": "c"}]
+	encodeCborArrayHeader(testBuf, 2);
+		encodeCborString(testBuf, "a");
+		encodeCborMapHeader(testBuf, 1);
+			encodeCborString(testBuf, "b");
+			encodeCborString(testBuf, "c");
+	assertHexAndClear("0x826161a161626163");
 
-	// Integer 0x00..0x17 (0..23)
-	foreach(ubyte item; 0x00..0x18)
-	{
-		assert(decodeCbor(only(item))==item);
-	}
+	// ["a": "A", "b": "B", "c":"C", "d": "D", "e": "E"]
+	encodeCborMapHeader(testBuf, 5);
+		foreach(chr; "aAbBcCdDeE")
+			encodeCborString(testBuf, (&chr)[0..1]);
+	assertHexAndClear("0xa56161614161626142616361436164614461656145");
 
-	// Unsigned integer (one-byte uint8_t follows)
-	assert(decodeCbor(cast(ubyte[])[0x18, ubyte.max]) == ubyte.max);
-	assertThrown!CborException(decodeCbor(cast(ubyte[])[0x18]));
+	// (_ h'0102', h'030405')
+	encodeCborBytesHeader(testBuf);
+		encodeCborBytes(testBuf, cast(ubyte[])[1, 2]);
+		encodeCborBytes(testBuf, cast(ubyte[])[3, 4, 5]);
+		encodeCborBreak(testBuf);
+	assertHexAndClear("0x5f42010243030405ff");
 
-	// Unsigned integer (two-byte uint16_t follows)
-	assert(decodeCbor(chain(cast(ubyte[])[0x19], ntob!ushort(1234)[])) == 1234);
-	assertThrown!CborException(decodeCbor(cast(ubyte[])[0x19]));
+	// (_ "strea", "ming")
+	encodeCborStringHeader(testBuf);
+		encodeCborString(testBuf, "strea");
+		encodeCborString(testBuf, "ming");
+		encodeCborBreak(testBuf);
+	assertHexAndClear("0x7f657374726561646d696e67ff");
 
-	// Unsigned integer (four-byte uint_t follows)
-	assert(decodeCbor(chain(cast(ubyte[])[0x1a], ntob!uint(1234)[])) == 1234);
-	assertThrown!CborException(decodeCbor(cast(ubyte[])[0x1a]));
+	// [_ ]
+	encodeCborArrayHeader(testBuf);
+		encodeCborBreak(testBuf);
+	assertHexAndClear("0x9fff");
 
-	// Unsigned integer (eight-byte uint64_t follows)
-	assert(decodeCbor(chain(cast(ubyte[])[0x1b], ntob!ulong(1234)[])) == 1234);
-	assertThrown!CborException(decodeCbor(cast(ubyte[])[0x1b]));
+	// [_ 1, [2, 3], [_ 4, 5]]
+	encodeCborArrayHeader(testBuf);
+		encodeCborInt(testBuf, 1);
+		encodeCborArrayHeader(testBuf, 2);
+			encodeCborInt(testBuf, 2);
+			encodeCborInt(testBuf, 3);
+		encodeCborArrayHeader(testBuf);
+			encodeCborInt(testBuf, 4);
+			encodeCborInt(testBuf, 5);
+			encodeCborBreak(testBuf);
+		encodeCborBreak(testBuf);
+	assertHexAndClear("0x9f018202039f0405ffff");
 
-	// Negative integer -1-0x00..-1-0x17 (-1..-24)
-	foreach(ubyte item; 0x20..0x38) // [-1..-24]
-	{
-		assert(decodeCbor(only(item)) == -cast(long)item+0x1f);
-	}
+	// [_ 1, [2, 3], [4, 5]]
+	encodeCborArrayHeader(testBuf);
+		encodeCborInt(testBuf, 1);
+		encodeCborArrayHeader(testBuf, 2);
+			encodeCborInt(testBuf, 2);
+			encodeCborInt(testBuf, 3);
+		encodeCborArrayHeader(testBuf, 2);
+			encodeCborInt(testBuf, 4);
+			encodeCborInt(testBuf, 5);
+		encodeCborBreak(testBuf);
+	assertHexAndClear("0x9f01820203820405ff");
 
-	// Negative integer -1-n (one-byte uint8_t for n follows)
-	assert(decodeCbor(cast(ubyte[])[0x38, byte.max-1]) == -byte.max);
-	assertThrown!CborException(decodeCbor(cast(ubyte[])[0x38]));
+	// [1, [2, 3], [_ 4, 5]]
+	encodeCborArrayHeader(testBuf, 3);
+		encodeCborInt(testBuf, 1);
+		encodeCborArrayHeader(testBuf, 2);
+			encodeCborInt(testBuf, 2);
+			encodeCborInt(testBuf, 3);
+		encodeCborArrayHeader(testBuf);
+			encodeCborInt(testBuf, 4);
+			encodeCborInt(testBuf, 5);
+			encodeCborBreak(testBuf);
+	assertHexAndClear("0x83018202039f0405ff");
 
-	// Negative integer -1-n (two-byte uint16_t for n follows)
-	assert(decodeCbor(chain(cast(ubyte[])[0x39], ntob!short(1234-1)[])) == -1234);
-	assertThrown!CborException(decodeCbor(cast(ubyte[])[0x39]));
+	// [1, [_ 2, 3], [4, 5]]
+	encodeCborArrayHeader(testBuf, 3);
+		encodeCborInt(testBuf, 1);
+		encodeCborArrayHeader(testBuf);
+			encodeCborInt(testBuf, 2);
+			encodeCborInt(testBuf, 3);
+			encodeCborBreak(testBuf);
+		encodeCborArrayHeader(testBuf, 2);
+			encodeCborInt(testBuf, 4);
+			encodeCborInt(testBuf, 5);
+	assertHexAndClear("0x83019f0203ff820405");
 
-	// Negative integer -1-n (four-byte uint_t for n follows)
-	assert(decodeCbor(chain(cast(ubyte[])[0x3a], ntob!int(1234-1)[])) == -1234);
-	assertThrown!CborException(decodeCbor(cast(ubyte[])[0x3a]));
+	import std.range : iota;
+	import std.algorithm : each;
+	// [_ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25],
+	encodeCborArrayHeader(testBuf);
+		iota(1, 26).each!(a => encodeCborInt(testBuf, a));
+		encodeCborBreak(testBuf);
+	assertHexAndClear("0x9f0102030405060708090a0b0c0d0e0f101112131415161718181819ff");
 
-	// Negative integer -1-n (eight-byte uint64_t for n follows)
-	assert(decodeCbor(chain(cast(ubyte[])[0x3b], ntob!long(1234-1)[])) == -1234);
-	assertThrown!CborException(decodeCbor(cast(ubyte[])[0x3b]));
+	// {_ "a": 1, "b": [_ 2, 3]}
+	encodeCborMapHeader(testBuf);
+		encodeCborString(testBuf, "a");
+		encodeCborInt(testBuf, 1);
+		encodeCborString(testBuf, "b");
+		encodeCborArrayHeader(testBuf);
+			encodeCborInt(testBuf, 2);
+			encodeCborInt(testBuf, 3);
+			encodeCborBreak(testBuf);
+		encodeCborBreak(testBuf);
+	assertHexAndClear("0xbf61610161629f0203ffff");
 
-	// byte string (0x00..0x17 bytes follow)
-	foreach(ubyte item; 0x40..0x58)
-	{
-		assert(equal(
-			decodeCbor(chain(
-				cast(ubyte[])[item],
-				iota(cast(ubyte)(item - 0x40)))
-			).via.raw,
-			iota(0, item - 0x40)
-			));
-	}
+	// ["a", {_ "b": "c"}]
+	encodeCborArrayHeader(testBuf, 2);
+		encodeCborString(testBuf, "a");
+		encodeCborMapHeader(testBuf);
+			encodeCborString(testBuf, "b");
+			encodeCborString(testBuf, "c");
+			encodeCborBreak(testBuf);
+	assertHexAndClear("0x826161bf61626163ff");
 
-	// byte string (one-byte uint8_t for n, and then n bytes follow)
-	assert(decodeCbor(cast(ubyte[])[0x58, 1, 42]) == cast(ubyte[])[42]);
-	// byte string (two-byte uint16_t for n, and then n bytes follow)
-	assert(decodeCbor(cast(ubyte[])[0x59, 0, 1, 42]) == cast(ubyte[])[42]);
-	// byte string (four-byte uint_t for n, and then n bytes follow)
-	assert(decodeCbor(cast(ubyte[])[0x5a, 0, 0, 0, 1, 42]) == cast(ubyte[])[42]);
-	// byte string (eight-byte uint64_t for n, and then n bytes follow)
-	assert(decodeCbor(cast(ubyte[])[0x5b, 0, 0, 0, 0, 0, 0, 0, 1, 42]) == cast(ubyte[])[42]);
-
-	// UTF-8 string (0x00..0x17 bytes follow)
-	assert(decodeCbor(cast(ubyte[])[0x64] ~ cast(ubyte[])"abcd") == "abcd");
-	// UTF-8 string (one-byte uint8_t for n, and then n bytes follow)
-	assert(decodeCbor(cast(ubyte[])[0x78, 4] ~ cast(ubyte[])"abcd") == "abcd");
-	// UTF-8 string (two-byte uint16_t for n, and then n bytes follow)
-	assert(decodeCbor(cast(ubyte[])[0x79, 0, 4] ~ cast(ubyte[])"abcd") == "abcd");
-	// UTF-8 string (four-byte uint_t for n, and then n bytes follow)
-	assert(decodeCbor(cast(ubyte[])[0x7a, 0, 0, 0, 4] ~ cast(ubyte[])"abcd") == "abcd");
-	// UTF-8 string (eight-byte uint64_t for n, and then n bytes follow)
-	assert(decodeCbor(cast(ubyte[])[0x7b, 0, 0, 0, 0, 0, 0, 0, 4] ~ cast(ubyte[])"abcd") == "abcd");
-	// UTF-8 string, UTF-8 strings follow, terminated by "break"
-
-	// array (0x00..0x17 data items follow)
-	assert(decodeCbor(cast(ubyte[])[0x84, 1, 2, 3, 4]) == [1, 2, 3, 4]);
-	// array (one-byte uint8_t for n, and then n data items follow)
-	assert(decodeCbor(cast(ubyte[])[0x98, 4, 1, 2, 3, 4]) == [1, 2, 3, 4]);
-	// array (two-byte uint16_t for n, and then n data items follow)
-	assert(decodeCbor(cast(ubyte[])[0x99, 0, 4, 1, 2, 3, 4]) == [1, 2, 3, 4]);
-	// array (four-byte uint_t for n, and then n data items follow)
-	assert(decodeCbor(cast(ubyte[])[0x9a, 0, 0, 0, 4, 1, 2, 3, 4]) == [1, 2, 3, 4]);
-	// array (eight-byte uint64_t for n, and then n data items follow)
-	assert(decodeCbor(cast(ubyte[])[0x9b, 0, 0, 0, 0, 0, 0, 0, 4, 1, 2, 3, 4]) == [1, 2, 3, 4]);
-	// array, data items follow, terminated by "break"
-	
-	// map (0x00..0x17 pairs of data items follow)
-	assert(decodeCbor(getEncoded([1:2, 3:4])) == [1:2, 3:4]);
-	assert(decodeCbor(cast(ubyte[])[0xa2, 1, 2, 3, 4]) == [1:2, 3:4]);
-	// map (one-byte uint8_t for n, and then n pairs of data items follow)   
-	assert(decodeCbor(cast(ubyte[])[0xb8, 2, 1, 2, 3, 4]) == [1:2, 3:4]);
-	// map (two-byte uint16_t for n, and then n pairs of data items follow)
-	assert(decodeCbor(cast(ubyte[])[0xb9, 0, 2, 1, 2, 3, 4]) == [1:2, 3:4]);
-	// map (four-byte uint_t for n, and then n pairs of data items follow)
-	assert(decodeCbor(cast(ubyte[])[0xba, 0, 0, 0, 2, 1, 2, 3, 4]) == [1:2, 3:4]);
-	// map (eight-byte uint64_t for n, and then n pairs of data items follow)
-	assert(decodeCbor(cast(ubyte[])[0xbb, 0, 0, 0, 0, 0, 0, 0, 2, 1, 2, 3, 4]) == [1:2, 3:4]);
-
-	// False
-	assert(decodeCbor(cast(ubyte[])[0xf4]) == false);
-	// True
-	assert(decodeCbor(cast(ubyte[])[0xf5]) == true);
-	// Null
-	assert(decodeCbor(cast(ubyte[])[0xf6]) == CborValue(null));
-	// Undefined
-	assert(decodeCbor(cast(ubyte[])[0xf7]) == CborValue(CborValue.Type.undefined));
-	
-	// (simple value, one byte follows) 0xf8
-
-	// Half-Precision Float (two-byte IEEE 754)
-	__HalfRep hr = {h : CustomFloat!16(1.234f)};
-	assert(decodeCbor(cast(ubyte[])[0xf9] ~
-		ntob!ushort((hr.u))[]) == CborValue(CustomFloat!16(1.234f).get!float));
-
-	// Single-Precision Float (four-byte IEEE 754)
-	assert(decodeCbor(cast(ubyte[])[0xfa] ~
-		ntob!uint((cast(__FloatRep)1.234f).u)[]) == CborValue(1.234f));
-	
-	// Double-Precision Float (eight-byte IEEE 754)
-	assert(decodeCbor(cast(ubyte[])[0xfb] ~
-		ntob!ulong((cast(__DoubleRep)1.234).u)[]) == CborValue(1.234));	
+	// {_ "Fun": true, "Amt": -2}
+	encodeCborMapHeader(testBuf);
+		encodeCborString(testBuf, "Fun");
+		encodeCborBool(testBuf, true);
+		encodeCborString(testBuf, "Amt");
+		encodeCborInt(testBuf, -2);
+		encodeCborBreak(testBuf);
+	assertHexAndClear("0xbf6346756ef563416d7421ff");
 }
 
-unittest // test tag ignoring
+// indefinite-length decoding
+unittest
 {
-	assert(decodeCbor(cast(ubyte[])[0xc0, 0x18, ubyte.max]) == ubyte.max);
+	encodeCborBytesHeader(testBuf);
+		encodeCborBytes(testBuf, cast(ubyte[])[1, 2]);
+		encodeCborBytes(testBuf, cast(ubyte[])[1, 2]);
+		encodeCborBreak(testBuf);
+	ubyte[] output1;
+	decodeCbor(testBuf.data, output1);
+	assertEqual(output1, [1,2,1,2]);
+	testBuf.clear();
 
-	assert(decodeCbor(cast(ubyte[])[0xd8, 0, 0x18, ubyte.max]) == ubyte.max);
-	assert(decodeCbor(cast(ubyte[])[0xd9, 0, 0, 0x18, ubyte.max]) == ubyte.max);
-	assert(decodeCbor(cast(ubyte[])[0xda, 0, 0, 0, 0, 0x18, ubyte.max]) == ubyte.max);
-	assert(decodeCbor(cast(ubyte[])[0xdb, 0, 0, 0, 0, 0, 0, 0, 0, 0x18, ubyte.max]) == ubyte.max);
+	encodeCborStringHeader(testBuf);
+		encodeCborString(testBuf, "zzz");
+		encodeCborString(testBuf, "zzz");
+		encodeCborString(testBuf, "zzz");
+		encodeCborBreak(testBuf);
+	string output2;
+	decodeCbor(testBuf.data, output2);
+	assertEqual(output2, "zzzzzzzzz");
+	testBuf.clear();
+
+	encodeCborArrayHeader(testBuf);
+		encodeCborInt(testBuf, 1);
+		encodeCborInt(testBuf, 2);
+		encodeCborInt(testBuf, 3);
+		encodeCborInt(testBuf, 4);
+		encodeCborInt(testBuf, 5);
+		encodeCborBreak(testBuf);
+	int[] output3;
+	decodeCbor(testBuf.data, output3);
+	assertEqual(output3, [1,2,3,4,5]);
+	testBuf.clear();
+
+	encodeCborMapHeader(testBuf);
+		encodeCborInt(testBuf, 1);
+		encodeCborString(testBuf, "abc");
+		encodeCborInt(testBuf, 2);
+		encodeCborString(testBuf, "def");
+		encodeCborBreak(testBuf);
+	string[int] output4;
+	decodeCbor(testBuf.data, output4);
+	assertEqual(output4, [1:"abc", 2:"def"]);
+	testBuf.clear();
+}
+
+// Printing
+unittest
+{
+	Appender!(char[]) strBuf; strBuf.reserve(1024);
+	void cmpStreamStringAndReset(string file = __MODULE__, size_t line = __LINE__)(string expected){
+		assertEqual!(file, line)(strBuf.data, expected);
+		testBuf.clear();
+		strBuf.clear();
+	}
+	import std.range : cycle, take, takeExactly, repeat, Repeat, iota;
+
+	encodeCborInt(testBuf, 1);
+	printCborStream(testBuf.data, strBuf);
+	cmpStreamStringAndReset("(posinteger, 1)\n");
+	
+	encodeCborArrayHeader(testBuf);
+		encodeCborInt(testBuf, 1);
+		encodeCborArrayHeader(testBuf, 2);
+			encodeCborInt(testBuf, 2);
+			encodeCborInt(testBuf, 3);
+		encodeCborArrayHeader(testBuf);
+			encodeCborInt(testBuf, 4);
+			encodeCborInt(testBuf, 5);
+			encodeCborBreak(testBuf);
+		encodeCborBreak(testBuf);
+
+	printCborStream(testBuf.data, strBuf);
+	cmpStreamStringAndReset(
+	"(array, _)\n"
+	"  (posinteger, 1)\n"
+	"  (array, 2)\n"
+	"    (posinteger, 2)\n"
+	"    (posinteger, 3)\n"
+	"  (array, _)\n"
+	"    (posinteger, 4)\n"
+	"    (posinteger, 5)\n"
+	"    (break)\n"
+	"  (break)\n");
+
+	encodeCborTag(testBuf, 100);
+		encodeCborBytesHeader(testBuf, 16);
+			auto bytes = iota!ubyte(10).cycle.take(16);
+			encodeCborBytesItems(testBuf, bytes);
+
+	printCborStream(testBuf.data, strBuf);
+	cmpStreamStringAndReset(
+	"(tag, 100)\n"~
+	"  (bytes, 16)\n"~
+	"    (00010203040506070809000102030405)\n");
 }
 
 /// structs, classes, tuples
@@ -1686,6 +1813,7 @@ unittest // decoding exact
 		float f;
 		double d;
 		ubyte[] arr;
+		int[] intarr;
 		string str;
 		Inner inner;
 
@@ -1697,12 +1825,12 @@ unittest // decoding exact
 	size_t size;
 
 	Test1 test = Test1(42, -120, 111111, -123456789, 0.1234, -0.987654,
-		cast(ubyte[])[1,2,3,4,5,6,7,8], "It is a test string",
+		cast(ubyte[])[1,2,3,4,5,6,7,8], [42, 41], "It is a test string",
 		Inner([1,2,3,4,5], "Test of inner struct"));
 
 	size = encodeCborArray(buf1[], test);
 	Test1 result = decodeCborSingle!Test1(buf1[0..size]);
-	assert(test == result);
+	assertEqual(test, result);
 
 	import std.typecons : Tuple;
 
@@ -1711,7 +1839,7 @@ unittest // decoding exact
 
 	size = encodeCborArray(buf1[], testTuple);
 	TupleVal resultTuple = decodeCborSingle!TupleVal(buf1[0..size]);
-	assert(testTuple == resultTuple);
+	assertEqual(testTuple, resultTuple);
 
 	static class Inner2
 	{
@@ -1746,10 +1874,10 @@ unittest // decoding exact
 	size = encodeCborArray(buf1[], testClass);
 	ubyte[] encodedBuf = buf1[0..size];
 	Test2 resultClass = decodeCborSingle!Test2(encodedBuf);
-	assert(encodedBuf.length == 0);
+	assertEqual(encodedBuf.length, 0);
 
 	foreach(i, m; resultClass.tupleof)
-		assert(testClass.tupleof[i] == m);
+		assertEqual(testClass.tupleof[i], m);
 
 	testClass.inner = new Inner2;
 	testClass.inner.val = -555;
@@ -1759,7 +1887,7 @@ unittest // decoding exact
 	resultClass = decodeCborSingle!Test2(buf1[0..size]);
 
 	foreach(i, m; resultClass.inner.tupleof)
-		assert(testClass.inner.tupleof[i] == m);
+		assertEqual(testClass.inner.tupleof[i], m);
 }
 
 unittest // decoding with dup
@@ -1770,16 +1898,16 @@ unittest // decoding with dup
 	// with dup
 	size = encodeCbor(buf1[], cast(ubyte[])[0, 1, 2, 3, 4, 5]);
 	ubyte[] data = decodeCborSingleDup!(ubyte[])(buf1[0..size]);
-	buf1[] = 0;
+	buf1[] = 0; // zero-out initial data, to check that result was duped.
 
-	assert(data == [0, 1, 2, 3, 4, 5]);
+	assertEqual(data, [0, 1, 2, 3, 4, 5]);
 
 	// without dup
 	size = encodeCbor(buf1[], cast(ubyte[])[0, 1, 2, 3, 4, 5]);
 	data = decodeCborSingle!(ubyte[])(buf1[0..size]);
 	buf1[] = 0;
 
-	assert(data == [0, 0, 0, 0, 0, 0]);
+	assertEqual(data, [0, 0, 0, 0, 0, 0]);
 
 	// dup is only needed for ubyte[] and string types,
 	// because they can be sliced from ubyte[] input range
@@ -1787,7 +1915,7 @@ unittest // decoding with dup
 	int[] intData = decodeCborSingle!(int[])(buf1[0..size]); // no dup
 	buf1[] = 0;
 
-	assert(intData == [0, 1, 2, 3, 4, 5]);
+	assertEqual(intData, [0, 1, 2, 3, 4, 5]);
 
 	// also no slicing will occur if data was encoded as regular array and than
 	// ubyte[] retreived. integer[] -> ubyte[] cast would occur causing possible data loss.
@@ -1804,12 +1932,12 @@ unittest // static arrays
 	// raw static array
 	size = encodeCbor(buf[], cast(ubyte[6])[0, 1, 2, 3, 4, 5]);
 	ubyte[6] data1 = decodeCborSingle!(ubyte[6])(buf[0..size]);
-	assert(data1 == [0, 1, 2, 3, 4, 5]);
+	assertEqual(data1, [0, 1, 2, 3, 4, 5]);
 
 	// regular static array
 	size = encodeCbor(buf[], cast(int[6])[0, 1, 2, 3, 4, 5]);
 	int[6] data2 = decodeCborSingle!(int[6])(buf[0..size]);
-	assert(data2 == [0, 1, 2, 3, 4, 5]);
+	assertEqual(data2, [0, 1, 2, 3, 4, 5]);
 }
 
 unittest // const
@@ -1829,7 +1957,7 @@ unittest // using output range
 
 	size_t size = encodeCbor(buffer, testData);
 
-	assert(testData == decodeCborSingle!(ubyte[])(buffer.data));
+	assertEqual(testData, decodeCborSingle!(ubyte[])(buffer.data));
 }
 
 unittest // recursive type
@@ -1850,15 +1978,15 @@ unittest // char arrays
 
 	size_t size = encodeCbor(buf[], cast(char[])"abc");
 	char[] str1 = decodeCborSingle!(char[])(buf[0..size]);
-	assert(str1 == "abc");
+	assertEqual(str1, "abc");
 
 	size = encodeCbor(buf[], cast(const char[])"abc");
 	const char[] str2 = decodeCborSingle!(const char[])(buf[0..size]);
-	assert(str2 == "abc");
+	assertEqual(str2, "abc");
 
 	size = encodeCbor(buf[], cast(immutable char[])"abc");
 	immutable char[] str3 = decodeCborSingle!(immutable char[])(buf[0..size]);
-	assert(str3 == "abc");
+	assertEqual(str3, "abc");
 }
 
 unittest // char wchar dchar
@@ -1868,52 +1996,52 @@ unittest // char wchar dchar
 
 	size_t size = encodeCbor(buf[], cast(char)testChar);
 	char chr = decodeCborSingle!(char)(buf[0..size]);
-	assert(chr == testChar);
+	assertEqual(chr, testChar);
 
 	size = encodeCbor(buf[], cast(wchar)testChar);
 	wchar wchr = decodeCborSingle!(wchar)(buf[0..size]);
-	assert(wchr == testChar);
+	assertEqual(wchr, testChar);
 
 	size = encodeCbor(buf[], cast(dchar)testChar);
 	dchar dchr = decodeCborSingle!(dchar)(buf[0..size]);
-	assert(dchr == testChar);
+	assertEqual(dchr, testChar);
 
 	size = encodeCbor(buf[], cast(const char)testChar);
 	const char constchr = decodeCborSingle!(const char)(buf[0..size]);
-	assert(constchr == testChar);
+	assertEqual(constchr, testChar);
 
 	size = encodeCbor(buf[], cast(const wchar)testChar);
 	const wchar constwchr = decodeCborSingle!(const wchar)(buf[0..size]);
-	assert(constwchr == testChar);
+	assertEqual(constwchr, testChar);
 
 	size = encodeCbor(buf[], cast(immutable dchar)testChar);
 	immutable dchar immdchr = decodeCborSingle!(immutable dchar)(buf[0..size]);
-	assert(immdchr == testChar);
+	assertEqual(immdchr, testChar);
 }
 
 unittest // wstring dstring; static char wchar dchar arrays
 {
 	ubyte[1024] buf;
 
-	size_t size = encodeCbor(buf[], "hello"w);
+	size_t size = encodeCbor(buf[], "hello w"w);
 	wstring wstr = decodeCborSingle!(wstring)(buf[0..size]);
-	assert(wstr == "hello"w);
+	assertEqual(wstr, "hello w"w);
 
-	size = encodeCbor(buf[], "hello"d);
+	size = encodeCbor(buf[], "hello d"d);
 	dstring dstr = decodeCborSingle!(dstring)(buf[0..size]);
-	assert(dstr == "hello"d);
+	assertEqual(dstr, "hello d"d);
 
-	size = encodeCbor(buf[], cast(char[5])"hello");
-	char[5] str1 = decodeCborSingle!(char[5])(buf[0..size]);
-	assert(str1 == "hello");
+	size = encodeCbor(buf[], cast(char[7])"hello c");
+	char[7] str1 = decodeCborSingle!(char[7])(buf[0..size]);
+	assertEqual(str1, "hello c");
 
-	size = encodeCbor(buf[], cast(wchar[5])"hello");
-	wchar[5] wstr1 = decodeCborSingle!(wchar[5])(buf[0..size]);
-	assert(wstr1 == "hello"w);
+	size = encodeCbor(buf[], cast(wchar[7])"hello w");
+	wchar[7] wstr1 = decodeCborSingle!(wchar[7])(buf[0..size]);
+	assertEqual(wstr1, "hello w"w);
 
-	size = encodeCbor(buf[], cast(dchar[5])"hello");
-	dchar[5] dstr1 = decodeCborSingle!(dchar[5])(buf[0..size]);
-	assert(dstr1 == "hello"d);
+	size = encodeCbor(buf[], cast(dchar[7])"hello d");
+	dchar[7] dstr1 = decodeCborSingle!(dchar[7])(buf[0..size]);
+	assertEqual(dstr1, "hello d"d);
 }
 
 unittest // char[] wchar[] dchar[]
@@ -1922,42 +2050,41 @@ unittest // char[] wchar[] dchar[]
 
 	size_t size = encodeCbor(buf[], cast(char[])"hello");
 	char[] str1 = decodeCborSingle!(char[])(buf[0..size]);
-	assert(str1 == "hello");
+	assertEqual(str1, "hello");
 
 	size = encodeCbor(buf[], cast(wchar[])"hello");
 	wchar[] wstr1 = decodeCborSingle!(wchar[])(buf[0..size]);
-	assert(wstr1 == "hello"w);
+	assertEqual(wstr1, "hello"w);
 
 	size = encodeCbor(buf[], cast(dchar[])"hello");
 	dchar[] dstr1 = decodeCborSingle!(dchar[])(buf[0..size]);
-	assert(dstr1 == "hello"d);
+	assertEqual(dstr1, "hello"d);
 }
 
-// flatten mode
-unittest
+unittest // flatten mode
 {
-	ubyte[128] buf;
+	ubyte[1024] buf;
 	size_t size;
 
 	size = encodeCbor(buf[], cast(ubyte[2])[1, 2]);
-	assert(toHexString(buf[0..size]) == "0x420102");
+	assertEqual(toHexString(buf[0..size]), "0x420102");
 
 	// Raw
 	size = encodeCbor!(Yes.Flatten)(buf[], cast(ubyte[2])[1, 2]);
-	assert(toHexString(buf[0..size]) == "0x0102");
+	assertEqual(toHexString(buf[0..size]), "0x0102");
 
 	// Array
 	size = encodeCbor!(Yes.Flatten)(buf[], cast(int[2])[1, 2]);
-	assert(toHexString(buf[0..size]) == "0x0102");
+	assertEqual(toHexString(buf[0..size]), "0x0102");
 
 	// String
 	size = encodeCbor!(Yes.Flatten)(buf[], cast(immutable(char)[1])"a");
-	assert(toHexString(buf[0..size]) == "0x61");
+	assertEqual(toHexString(buf[0..size]), "0x61");
 
 	// Tuple
 	import std.typecons : tuple;
 	size = encodeCbor!(Yes.Flatten)(buf[], tuple(1, 2));
-	assert(toHexString(buf[0..size]) == "0x0102");
+	assertEqual(toHexString(buf[0..size]), "0x0102");
 
 	// Struct
 	static struct A {
@@ -1973,13 +2100,53 @@ unittest
 		C c;
 	}
 	size = encodeCbor!(Yes.Flatten)(buf[], D(C(B(A(1, 2)))));
-	assert(toHexString(buf[0..size]) == "0x0102");
+	assertEqual(toHexString(buf[0..size]), "0x0102");
+
+	size = encodeCbor!(No.Flatten)(buf[], D(C(B(A(1, 2)))));
+	assertEqual(toHexString(buf[0..size]), "0x818181820102");
+
+	size = encodeCbor!(Yes.Flatten)(buf[], cast(int)1);
+	assertEqual(decodeCborSingle!(int, Yes.Flatten)(buf[0..size]), 1);
+
+	size = encodeCbor!(Yes.Flatten)(buf[], cast(float)1);
+	assertEqual(decodeCborSingle!(float, Yes.Flatten)(buf[0..size]), 1);
+
+	size = encodeCbor!(Yes.Flatten)(buf[], true);
+	assertEqual(decodeCborSingle!(bool, Yes.Flatten)(buf[0..size]), true);
+
+	size = encodeCbor!(Yes.Flatten)(buf[], 'a');
+	assertEqual(decodeCborSingle!(char, Yes.Flatten)(buf[0..size]), 'a');
+
+	size = encodeCbor!(Yes.Flatten)(buf[], cast(ubyte[])[1,2]);
+	assertEqual(decodeCborSingle!(ubyte[], Yes.Flatten)(buf[0..size]), cast(ubyte[])[1,2]);
+
+	size = encodeCbor!(Yes.Flatten)(buf[], cast(ubyte[2])[1,2]);
+	assertEqual(decodeCborSingle!(ubyte[2], Yes.Flatten)(buf[0..size]), cast(ubyte[2])[1,2]);
+
+	// TODO
+}
+
+//------------------------------------------------------------------------------
+//	EEEEEEE XX    XX  CCCCC  EEEEEEE PPPPPP  TTTTTTT IIIII  OOOOO  NN   NN 
+//	EE       XX  XX  CC    C EE      PP   PP   TTT    III  OO   OO NNN  NN 
+//	EEEEE     XXXX   CC      EEEEE   PPPPPP    TTT    III  OO   OO NN N NN 
+//	EE       XX  XX  CC    C EE      PP        TTT    III  OO   OO NN  NNN 
+//	EEEEEEE XX    XX  CCCCC  EEEEEEE PP        TTT   IIIII  OOOO0  NN   NN 
+//	                                                                       
+//------------------------------------------------------------------------------
+
+class CborException : Exception
+{
+	@trusted pure this(string message, string file = __FILE__, size_t line = __LINE__)
+	{
+		super(message, file, line);
+	}
 }
 
 private:
 
 @safe pure
-void onCastErrorToFrom(To)(CborValue.Type from, string file = __FILE__, size_t line = __LINE__)
+void onCastErrorToFrom(To)(CborTokenType from, string file = __FILE__, size_t line = __LINE__)
 {
 	throw new CborException(format("Attempt to cast %s to %s", from, typeid(To)), file, line);
 }
