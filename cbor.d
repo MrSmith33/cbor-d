@@ -709,24 +709,28 @@ void decodeCbor(
 			outValue = cast(T)token.uinteger;
 			return;
 		}
+		onCastErrorToFrom!T(token.type);
 	} else static if (isSomeChar!T) {
 		token = decodeCborToken(input);
 		if (token.type == CborTokenType.posinteger) {
 			outValue = cast(T)token.uinteger;
 			return;
 		}
+		onCastErrorToFrom!T(token.type);
 	} else static if (isFloatingPoint!T) {
 		token = decodeCborToken(input);
 		if (token.type == CborTokenType.floating) {
 			outValue = cast(T)token.floating;
 			return;
 		}
+		onCastErrorToFrom!T(token.type);
 	} else static if (isBoolean!T) {
 		token = decodeCborToken(input);
 		if (token.type == CborTokenType.boolean) {
 			outValue = token.boolean;
 			return;
 		}
+		onCastErrorToFrom!T(token.type);
 	} else static if ((isArray!T || isOutputRange!(T, ubyte)) && is(Unqual!(ElementType!T) == ubyte)) {
 		decodeCborExactByteArray!(duplicate, flatten)(input, outValue);
 		return;
@@ -779,7 +783,6 @@ void decodeCbor(
 		static assert(false, "Unable to decode " ~ T.stringof);
 	}
 
-	onCastErrorToFrom!T(token.type);
 	assert(false);
 }
 
