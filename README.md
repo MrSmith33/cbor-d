@@ -28,8 +28,92 @@
 + While aggregates can be encoded as maps, they can not be decoded as such, only from arrays.
 
 
+## API
+### CBOR encoding
+
+```D
+size_t encodeCborInt (sink, value)
+size_t encodeCborFloat (sink, value)
+size_t encodeCborBool (sink, value)
+size_t encodeCborNull (sink, value)
+size_t encodeCborUndefined (sink, value)
+size_t encodeCborBreak (sink, value)
+size_t encodeCborSimple (sink, value)
+
+// version without length encodes indefinite-length header.
+size_t encodeCborBytesHeader(sink [, length])
+size_t encodeCborStringHeader(sink [, length])
+size_t encodeCborArrayHeader(sink [, length])
+size_t encodeCborMapHeader(sink [, length])
+
+size_t encodeCborBytesItems (sink, bytes)
+
+size_t encodeCborTag (sink, value)
+
+```
+
+### Serialization
+
+```D
+size_t encodeCbor <flatten> (sink, value)
+size_t encodeCborBytes <flatten> (sink, value)
+size_t encodeCborString <flatten> (sink, value)
+size_t encodeCborArray <flatten> (sink, value)
+size_t encodeCborMap <flatten> (sink, value)
+size_t encodeCborAggregate <withFieldName, flatten> (sink, value)
+```
+
+### CBOR Decoding
+
+```D
+enum CborTokenType {
+	arrayHeader
+	arrayIndefiniteHeader
+	mapHeader
+	mapIndefiniteHeader
+	bytesHeader
+	bytesIndefiniteHeader
+	textHeader
+	textIndefiniteHeader
+	undefined
+	nil
+	boolean
+	tag
+	simple
+	breakCode
+	posinteger
+	neginteger
+	floating
+}
+struct CborToken {
+	CborTokenType type;
+	union {
+		bool boolean;
+		long integer;
+		double floating;
+		ulong uinteger;
+	}
+}
+
+CborToken decodeCborToken (input)
+```
+
+### Deserialization
+
+```D
+void decodeCbor <dup, flatten> (input, ref outValue)
+T decodeCborSingle <T, flatten> (input)
+T decodeCborSingleDup <T, flatten> (input)
+
+ubyte[] readBytes (input, length)
+void printCborStream <indent="  "> (input, sink = stdout, numItems = ulong.max, indent = "")
+```
+
+## Usage example
+
 ```D
 	import cbor;
+	import std.array : Appender;
 	
 	struct Inner
 	{
@@ -54,17 +138,19 @@
 		int* numPointer; // not encoded
 	}
 
-	ubyte[1024] buffer;
-	size_t encodedSize;
+	Appender!(ubyte[]) buffer;
 
 	Test test = Test(42, -120, 111111, -123456789, 0.1234, -0.987654,
 		cast(ubyte[])[1,2,3,4,5,6,7,8], "It is a test string",
 		Inner([1,2,3,4,5], "Test of inner struct"));
 
-	encodedSize = encodeCborArray(buffer[], test);
+	encodeCborArray(buffer[], test);
 
 	// ubyte[] and string types are slices of input ubyte[].
-	Test result = decodeCborSingle!Test(buffer[0..encodedSize]);
+	Test result = decodeCborSingle!Test(buffer.data);
+	// or
+	// Test result;
+	// decodeCbor(buffer.data, result);
 
 	// decodeCborSingleDup can be used to auto-dup those types.
 
