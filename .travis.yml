@@ -11,7 +11,9 @@ d:
  - dmd-2.069.2
  - dmd-2.068.2
  - dmd-2.067.1
- - ldc-1.0.0
+ - ldc-1.0.0-alpha1
+ - ldc-0.17.0
+ - ldc-0.16.0
 
 env: 
   matrix:

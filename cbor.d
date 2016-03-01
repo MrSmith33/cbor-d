@@ -864,10 +864,18 @@ private size_t readStaticString(T)(ubyte[] bytes, auto ref T outValue)
 	}
 	else
 	{
-		import std.utf : byUTF;
+		import std.utf : byChar, byWchar, byDchar;
 		alias V = Unqual!(ElementEncodingType!T);
+		
+		static if (is(V == char))
+			alias byElem = byChar;
+		else static if (is(V == wchar))
+			alias byElem = byWchar;
+		else static if (is(V == dchar))
+			alias byElem = byDchar;
+
 		size_t i;
-		foreach(c; byUTF!V(cast(char[])bytes)) {
+		foreach(c; byElem(cast(char[])bytes)) {
 			outValue[i] = c;
 			++i;
 		}
