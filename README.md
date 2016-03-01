@@ -2,15 +2,18 @@
 
 ### Supported features
 1. Encoding
-  + integers - `ubyte ushort uint ulong byte short int long`
-  + floating numbers - `float`, `double`
-  + boolean - `bool`
-  + fixed length byte strings - `ubyte[]`
+  + integers - `ubyte ushort uint ulong byte short int long`;
+  + floating numbers - `float`, `double`;
+  + boolean - `bool`;
+  + fixed length byte strings - `ubyte[]`;
   + fixed length UTF-8 strings - `string`;
   + fixed length arrays aka tuples. Items can be of any type;
   + fixed length maps. Pairs of key/value of any type - `K[V]`;
   + Aggregate encoding. Structs, tuples and classes - `class, Tuple, struct`. Can be encoded as both arrays and maps;
-  + null values - `null`.
+  + null values - `null`;
+  + Tags;
+  + Simple values
+
 2. Decoding
   + Integers;
   + Floats (half, float, double);
@@ -18,10 +21,10 @@
   + Aggregates can only be decoded from arrays now;
   + null values can be decoded as classes, arrays, maps, string;
   + All unused simple values will cause CborException to be thrown;
+  + Streaming support (i.e. Indefinite-Length Arrays, Maps, Byte Strings and Text Strings)
+  + Tags produce corresponding token.
 
 ### Restrictions
-+ No streaming support (i.e. Indefinite-Length Arrays, Maps, Byte Strings and Text Strings)
-+ Tags are ignored.
 + While aggregates can be encoded as maps, they can not be decoded as such, only from arrays.
 
 

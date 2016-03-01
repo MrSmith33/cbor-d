@@ -495,8 +495,8 @@ struct CborToken
 	{
 		bool boolean;
 		long integer;
-		// used for storing positive integers, array, map, raw and text size
 		double floating;
+		// used for storing positive integers, array, map, raw and text size
 		ulong uinteger;
 	}
 
@@ -866,7 +866,7 @@ private size_t readStaticString(T)(ubyte[] bytes, auto ref T outValue)
 	{
 		import std.utf : byChar, byWchar, byDchar;
 		alias V = Unqual!(ElementEncodingType!T);
-		
+
 		static if (is(V == char))
 			alias byElem = byChar;
 		else static if (is(V == wchar))
@@ -1183,7 +1183,7 @@ ubyte[] readBytes(R)(auto ref R input, ulong length)
 	}
 	else
 	{
-		result = take(input, dataLength).array;
+		result = take(input, dataLength).array; // TODO allocation
 	}
 
 	return result;
@@ -1229,7 +1229,7 @@ void printCborStream(string singleIndent="  ", Sink, R)(
 		auto ref R input,
 		auto ref Sink sink,
 		ulong numItems = ulong.max,
-		string indent = null
+		string indent = ""
 	)
 	if(isInputRange!R && is(ElementType!R == ubyte) && isOutputRange!(Sink, char))
 {

@@ -14,8 +14,14 @@ d:
  - ldc-1.0.0-alpha1
  - ldc-0.17.0
  - ldc-0.16.0
+ - gdc-5.2.0
 
-env: 
+matrix:
+  allow_failures:
+   - d: gdc-5.2.0
+   - d: dmd-2.067.1
+
+env:
   matrix:
     - ARCH=x86
     - ARCH=x86_64
