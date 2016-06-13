@@ -504,29 +504,29 @@ struct CborToken
 		ulong uinteger;
 	}
 
-	this(CborTokenType t) {
+	this(CborTokenType t) @nogc  {
 		type = t;
 	}
-	this(CborTokenType t, bool v) {
+	this(CborTokenType t, bool v) @nogc {
 		type = t;
 		boolean = v;
 	}
-	this(CborTokenType t, long v) {
+	this(CborTokenType t, long v) @nogc {
 		type = t;
 		integer = v;
 	}
-	this(CborTokenType t, double v) {
+	this(CborTokenType t, double v) @nogc {
 		type = t;
 		floating = v;
 	}
 
-	bool opEquals(const CborToken other) {
+	bool opEquals(const CborToken other) const @nogc {
 		ubyte[] thisRep = (cast(ubyte*)(&this))[0..this.sizeof];
 		ubyte[] otherRep = (cast(ubyte*)(&other))[0..other.sizeof];
 		return thisRep == otherRep;
 	}
 
-	string toString()
+	string toString() const
 	{
 		import std.string : format;
 		final switch(type) with(CborTokenType)
@@ -564,7 +564,6 @@ CborToken decodeCborToken(R)(auto ref R input)
 	if(isInputRange!R && is(ElementType!R == ubyte))
 {
 	import std.array;
-	import std.bitmanip;
 
 	if (input.empty) onInsufficientInput();
 
@@ -664,8 +663,8 @@ CborToken decodeCborToken(R)(auto ref R input)
 		case 0xf8: // (simple value, one byte follows)
 			return CborToken(CborTokenType.simple, readInteger!ubyte(input));
 		case 0xf9: // Half-Precision Float (two-byte IEEE 754)
-			__HalfRep hr = {u : readInteger!ushort(input)};
-			return CborToken(CborTokenType.floating, hr.h.get!double);
+			ushort u = readInteger!ushort(input);
+			return CborToken(CborTokenType.floating, halfToFloat(u));
 		case 0xfa: // Single-Precision Float (four-byte IEEE 754)
 			__FloatRep fr = {u : readInteger!uint(input)};
 			return CborToken(CborTokenType.floating, fr.f);
@@ -1043,7 +1042,9 @@ private void decodeAggregate(
 	(auto ref R input, ref T outValue)
 		if(isInputRange!R && is(ElementType!R == ubyte))
 {
-	CborToken token = decodeCborToken(input);
+	static if (!needsFlattening!(T, flatten)) {
+		CborToken token = decodeCborToken(input);
+	}
 
 	static if (is(T == class))
 	if (token.type == CborTokenType.nil) {
@@ -1136,20 +1137,15 @@ private void putChecked(R, E)(ref R sink, auto ref E e)
 		else
 			elemSize = ElementType!E.sizeof;
 
-		assert(sink.length >= elemSize,
-			format("Provided sink length is to small. Sink.$ %s < Data.$ %s", sink.length, elemSize));
+		assert(sink.length >= elemSize, "Provided sink length is to small");
 	}
 	put(sink, e);
 }
 
 private T readInteger(T, R)(auto ref R input)
-{
-	return readN!(T.sizeof, T, R)(input);
-}
-
-private T readN(ubyte size, T, R)(auto ref R input)
 	if(isInputRange!R && is(ElementType!R == ubyte))
 {
+	enum ubyte size = T.sizeof;
 	import std.algorithm : copy;
 	import std.bitmanip : bigEndianToNative;
 	import std.range : dropExactly, take;
@@ -1203,10 +1199,38 @@ private void checkArraySize(T)(T length)
 			throw new CborException(format("Array size is too big: %s > size_t.max", length));
 }
 
-private import std.numeric : CustomFloat;
-private union __HalfRep { CustomFloat!16 h; ushort u; string toString(){return format("__HalfRep(%s, %x)", h, u);};}
-private union __FloatRep { float f; uint u; string toString(){return format("__FloatRep(%s, %x)", f, u);};}
-private union __DoubleRep { double d; ulong u; string toString(){return format("__DoubleRep(%s, %x)", d, u);};}
+private union __FloatRep { float f; uint u;}
+private union __DoubleRep { double d; ulong u; }
+// from http://stackoverflow.com/questions/6162651/half-precision-floating-point-in-java
+private float halfToFloat(ushort half) @nogc
+{
+	int mant = half & 0x03ff;             // 10 bits mantissa
+	int exp =  half & 0x7c00;             // 5 bits exponent
+	if( exp == 0x7c00 )                   // NaN/Inf
+		exp = 0x3fc00;                    // -> NaN/Inf
+	else if( exp != 0 )                   // normalized value
+	{
+		exp += 0x1c000;                   // exp - 15 + 127
+		if( mant == 0 && exp > 0x1c400 ){ // smooth transition
+			__FloatRep f = {u : (( half & 0x8000 ) << 16 | exp << 13 | 0x3ff) };
+			return f.f;
+		}
+	}
+	else if( mant != 0 )                  // && exp==0 -> subnormal
+	{
+		exp = 0x1c400;                    // make it normal
+		do {
+			mant <<= 1;                   // mantissa * 2
+			exp -= 0x400;                 // decrease exp by 1
+		} while( ( mant & 0x400 ) == 0 ); // while not normal
+		mant &= 0x3ff;                    // discard subnormal bit
+	}                                     // else +/-0 -> +/-0
+	__FloatRep f = {u : (                 // combine all parts
+		( half & 0x8000 ) << 16           // sign  << ( 31 - 15 )
+		| ( exp | mant ) << 13 )          // value << ( 23 - 10 )
+	};
+	return f.f;       
+}
 
 /// Outputs textual representation of cbor stream into sink or stdout if not provided.
 void printCborStream(string singleIndent="  ", R)(auto ref R input)
@@ -2282,7 +2306,25 @@ unittest // flatten mode
 	assertEqual(decodeCborSingle!(ubyte[2], Yes.Flatten)(buf[0..size]), cast(ubyte[2])[1,2]);
 
 	size = encodeCborAggregate!(Yes.WithFieldName, Yes.Flatten)(buf[], new class{int a, b;});
-	assertEqual(decodeCborSingle!(int[string])(buf[0..size]), ["a":0,"b":0]);
+	assertEqual(decodeCborSingle!(int[string], Yes.Flatten)(buf[0..size]), ["a":0,"b":0]);
+
+	static struct ivec4 {int x,y,z,w;}
+	static struct Transform
+	{
+		ivec4 pos;
+	}
+
+	size = encodeCbor!(Yes.Flatten)(buf[], Transform( ivec4(1,2,3,4) ) );
+	assertEqual(decodeCborSingle!(Transform, Yes.Flatten)(buf[0..size]), Transform( ivec4(1,2,3,4) ));
+}
+
+@nogc unittest // @nogc
+{
+	ubyte[1024] buf;
+	size_t size;
+
+	size = encodeCbor(buf[], 42);
+	int num = decodeCborSingle!int(buf[0..size]);
 }
 
 //------------------------------------------------------------------------------
@@ -2296,7 +2338,7 @@ unittest // flatten mode
 
 class CborException : Exception
 {
-	@trusted pure this(string message, string file = __FILE__, size_t line = __LINE__)
+	@trusted pure @nogc this(string message, string file = __FILE__, size_t line = __LINE__)
 	{
 		super(message, file, line);
 	}
@@ -2304,20 +2346,32 @@ class CborException : Exception
 
 private:
 
-@safe pure
-void onCastErrorToFrom(To)(CborTokenType from, string file = __FILE__, size_t line = __LINE__)
+auto customEmplace(T, A...)(void[] buffer, A args) @nogc
 {
-	throw new CborException(format("Attempt to cast %s to %s", from, typeid(To)), file, line);
+	buffer[] = typeid(T).init;
+	return (cast(T)buffer.ptr).__ctor(args);
 }
 
-@safe pure
-void onInsufficientInput(string file = __FILE__, size_t line = __LINE__)
+CborException getException(A...)(string file, size_t line, string fmt, A args) @nogc
 {
-	throw new CborException("Input range is too short", file, line);
+	static ubyte[__traits(classInstanceSize, CborException)] exceptionBuffer;
+	static char[512] charBuffer;
+	import core.stdc.stdio : snprintf;
+	int written = snprintf(charBuffer.ptr, charBuffer.length, fmt.ptr, args);
+	return customEmplace!CborException(exceptionBuffer, cast(string)charBuffer[0..written], file, line);
 }
 
-@safe pure
-void onUnsupportedTag(ubyte tag, string file = __FILE__, size_t line = __LINE__)
+void onCastErrorToFrom(To)(CborTokenType from, string file = __FILE__, size_t line = __LINE__) @nogc
 {
-	throw new CborException(format("Unsupported tag found: %02x", tag), file, line);
+	throw getException(file, line, "Attempt to cast %s to %s", from, typeid(To));
+}
+
+void onInsufficientInput(string file = __FILE__, size_t line = __LINE__) @nogc
+{
+	throw getException(file, line, "Input range is too short");
+}
+
+void onUnsupportedTag(ubyte tag, string file = __FILE__, size_t line = __LINE__) @nogc
+{
+	throw getException(file, line, "Unsupported tag found: %02x", tag);
 }
