@@ -1229,15 +1229,15 @@ private float halfToFloat(ushort half) @nogc
 		( half & 0x8000 ) << 16           // sign  << ( 31 - 15 )
 		| ( exp | mant ) << 13 )          // value << ( 23 - 10 )
 	};
-	return f.f;       
+	return f.f;
 }
 
 /// Outputs textual representation of cbor stream into sink or stdout if not provided.
-void printCborStream(string singleIndent="  ", R)(auto ref R input)
+void printCborStream(string singleIndent="  ", R)(auto ref R input, ulong numItems = ulong.max)
 {
 	import std.stdio : stdout;
 	auto writer = stdout.lockingTextWriter;
-	printCborStream!singleIndent(input, writer);
+	printCborStream!singleIndent(input, writer, numItems);
 }
 
 /// ditto

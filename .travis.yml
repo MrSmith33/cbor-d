@@ -7,7 +7,7 @@ os:
 language: d
 
 d:
- - dmd-2.071.0
+ - dmd-2.071.2
  - dmd-2.070.2
  - dmd-2.069.2
  - dmd-2.068.2
@@ -17,7 +17,7 @@ d:
 
 matrix:
   allow_failures:
-   - ldc-1.0.0
+   - d: ldc-1.0.0
 
 env:
   matrix:
