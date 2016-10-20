@@ -61,6 +61,8 @@ size_t encodeCborString <flatten> (sink, value)
 size_t encodeCborArray <flatten> (sink, value)
 size_t encodeCborMap <flatten> (sink, value)
 size_t encodeCborAggregate <withFieldName, flatten> (sink, value)
+
+@ignore attribute
 ```
 
 ### CBOR Decoding
@@ -113,15 +115,14 @@ void printCborStream <indent="  "> (input, sink = stdout, numItems = ulong.max, 
 
 ```D
 	import cbor;
-	import std.array : Appender;
-	
-	struct Inner
+
+	static struct Inner
 	{
 		int[] array;
 		string someText;
 	}
 
-	struct Test
+	static struct Test
 	{
 		ubyte b;
 		short s;
@@ -132,19 +133,21 @@ void printCborStream <indent="  "> (input, sink = stdout, numItems = ulong.max, 
 		ubyte[] arr;
 		string str;
 		Inner inner;
+		@ignore long ignored; // not encoded
 
 		void fun(){} // not encoded
 		void* pointer; // not encoded
 		int* numPointer; // not encoded
 	}
 
-	Appender!(ubyte[]) buffer;
+	import std.array : appender;
+	auto buffer = appender!(ubyte[])();
 
 	Test test = Test(42, -120, 111111, -123456789, 0.1234, -0.987654,
 		cast(ubyte[])[1,2,3,4,5,6,7,8], "It is a test string",
-		Inner([1,2,3,4,5], "Test of inner struct"));
+		Inner([1,2,3,4,5], "Test of inner struct"), 88);
 
-	encodeCborArray(buffer[], test);
+	encodeCbor(buffer, test);
 
 	// ubyte[] and string types are slices of input ubyte[].
 	Test result = decodeCborSingle!Test(buffer.data);
@@ -154,7 +157,38 @@ void printCborStream <indent="  "> (input, sink = stdout, numItems = ulong.max, 
 
 	// decodeCborSingleDup can be used to auto-dup those types.
 
+	assert(result.ignored == 0);
+	result.ignored = test.ignored;
 	assert(test == result);
+
+
+	struct Vector4f
+	{
+		float x, y, z, w;
+	}
+
+	// encoded as array of 4 floats
+	encodeCbor(buffer, Vector4f(1,2,3,4));
+	buffer.clear();
+
+	// Flat encoding
+	// encoded as 4 floats
+	encodeCbor!(Yes.Flatten)(buffer, Vector4f(1,2,3,4));
+
+	// You need to use Yes.Flatten on both sides.
+	decodeCborSingle!(Vector4f, Yes.Flatten)(buffer.data);
+
+	// Printing cbor data (by default into stdout)
+	printCborStream(buffer.data);
+	// prints:
+	// (floating, 1)
+	// (floating, 2)
+	// (floating, 3)
+	// (floating, 4)
+
+	// you can also use other sink
+	auto textbuffer = appender!(char[])();
+	printCborStream(buffer.data, textbuffer);
 ```
 
 For more examples see unittests.
