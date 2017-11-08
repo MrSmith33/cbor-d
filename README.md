@@ -1,4 +1,4 @@
-#Concise Binary Object Representation (CBOR) for D language [![Build Status](https://travis-ci.org/MrSmith33/cbor-d.svg?branch=master)](https://travis-ci.org/MrSmith33/cbor-d)
+# Concise Binary Object Representation (CBOR) for D language [![Build Status](https://travis-ci.org/MrSmith33/cbor-d.svg?branch=master)](https://travis-ci.org/MrSmith33/cbor-d)
 
 ### Supported features
 1. Encoding
