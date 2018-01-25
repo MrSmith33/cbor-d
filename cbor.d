@@ -1,5 +1,5 @@
 /**
-Copyright: Copyright (c) 2014-2016 Andrey Penechko.
+Copyright: Copyright (c) 2014-2018 Andrey Penechko.
 License: $(WEB boost.org/LICENSE_1_0.txt, Boost License 1.0).
 Authors: Andrey Penechko.
 
@@ -80,7 +80,7 @@ size_t encodeCborInt(R, E)(auto ref R sink, E value)
 	ubyte majorType;
 
 	if (value < 0) {
-		val = -value - 1;
+		val = -cast(long)value - 1;
 		majorType = 1;
 	} else {
 		val = value;
