@@ -1,5 +1,7 @@
 # Concise Binary Object Representation (CBOR) for D language [![Build Status](https://travis-ci.org/MrSmith33/cbor-d.svg?branch=master)](https://travis-ci.org/MrSmith33/cbor-d)
 
+Implementation of [CBOR](https://cbor.io/) for D programming language.
+
 ### Supported features
 1. Encoding
   + integers - `ubyte ushort uint ulong byte short int long`;
